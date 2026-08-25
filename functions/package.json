@@ -1,0 +1,13 @@
+{
+  "name": "functions",
+  "description": "Cloud Functions for Rate My Life — sends a push notification when a message or call arrives, since Firestore listeners alone only work while the app is open.",
+  "engines": {
+    "node": "20"
+  },
+  "main": "index.js",
+  "dependencies": {
+    "firebase-admin": "^14.3.0",
+    "firebase-functions": "^7.3.2"
+  },
+  "private": true
+}

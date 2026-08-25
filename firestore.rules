@@ -1,0 +1,309 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    function publicProfile(uid) {
+      return get(/databases/$(database)/documents/profiles/$(uid)).data;
+    }
+
+    // A comment/rating target may be a mock/seed profile with no
+    // Firestore doc at all — treat that as "allowed" (client-side mock
+    // defaults apply) rather than evaluating `get()` on a document that
+    // doesn't exist, which denies outright instead of returning "not
+    // found" (see the `ratings` rule below for the same gotcha).
+    function commentsAllowed(profileOwnerId) {
+      return !exists(/databases/$(database)/documents/profiles/$(profileOwnerId))
+        || (publicProfile(profileOwnerId).privacy.visibility == 'public'
+            && publicProfile(profileOwnerId).privacy.allowComments == true);
+    }
+
+    function hasBlocked(blockerUid, blockedUid) {
+      return exists(/databases/$(database)/documents/profiles/$(blockerUid)/blocked/$(blockedUid));
+    }
+
+    // Same "missing profile doc = allowed" reasoning as commentsAllowed.
+    // `.get('allowMessages', true)`, not raw `.allowMessages` — a
+    // profile created before this field existed has no such key at
+    // all, and Firestore rules error out (denying the whole request)
+    // on a missing-key dot-access rather than treating it as null.
+    // The safe accessor's default must match the client's own
+    // `ProfilePrivacy.fromJson` default (`?? true`) or an old profile
+    // silently blocks messages that the client-rendered privacy
+    // toggle claims are allowed.
+    function messagesAllowed(recipientId) {
+      return !exists(/databases/$(database)/documents/profiles/$(recipientId))
+        || (publicProfile(recipientId).privacy.visibility == 'public'
+            && publicProfile(recipientId).privacy.get('allowMessages', true) == true);
+    }
+
+    // Same "missing profile doc = allowed" reasoning as commentsAllowed.
+    // Same missing-key reasoning as messagesAllowed above.
+    function callsAllowed(calleeId) {
+      return !exists(/databases/$(database)/documents/profiles/$(calleeId))
+        || (publicProfile(calleeId).privacy.visibility == 'public'
+            && publicProfile(calleeId).privacy.get('allowCalls', true) == true);
+    }
+
+    // Public profile fields — anonymous income/savings and the
+    // owner's own block list live in subcollections below, never here.
+    match /profiles/{uid} {
+      allow read: if true;
+      allow create, delete: if isOwner(uid);
+      // The owner can change anything; any other signed-in user may
+      // touch only `ratingSummary` (the running aggregate a rater's
+      // device updates transactionally when it submits/edits/removes
+      // its own rating), `viewCount` (incremented by a viewer's
+      // device each time it opens this profile), or `photoVoteCounts`
+      // (the same transactional-aggregate pattern, for best-photo
+      // votes). These are the only ways anyone but the owner can write
+      // to a profile document.
+      allow update: if isOwner(uid)
+        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ratingSummary']))
+        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount']))
+        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['photoVoteCounts']));
+
+      match /private/income {
+        allow read: if isOwner(uid) || publicProfile(uid).privacy.showIncome == true;
+        allow write: if isOwner(uid);
+      }
+
+      match /private/savings {
+        allow read: if isOwner(uid) || publicProfile(uid).privacy.showSavings == true;
+        allow write: if isOwner(uid);
+      }
+
+      // investments/debt/monthlyExpenses feed the owner's own Life
+      // Score calculation only — the app never displays them to
+      // anyone, including the owner, on any screen today.
+      match /private/financeExtra {
+        allow read, write: if isOwner(uid);
+      }
+
+      // Never readable by anyone but the blocker — a blocked user must
+      // never learn they were blocked.
+      match /blocked/{blockedId} {
+        allow read, write: if isOwner(uid);
+      }
+    }
+
+    // One rating per (rater, profile), doc id "{raterId}_{profileId}".
+    // Only the rater can ever read their own rating record — nobody,
+    // not even the profile owner, can learn who rated them or see an
+    // individual score. Public visibility is the aggregate written to
+    // `profiles/{profileId}.ratingSummary` above, never this document.
+    match /ratings/{ratingId} {
+      // `resource == null` covers reading a rating that doesn't exist
+      // yet — an upsert transaction checks for a prior rating before
+      // writing, and without this guard Firestore denies that
+      // existence check outright instead of returning "not found".
+      allow read: if isSignedIn() && (resource == null || resource.data.raterId == request.auth.uid);
+      allow update, delete: if isSignedIn() && resource.data.raterId == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.raterId == request.auth.uid
+        && request.resource.data.profileId != request.auth.uid
+        && ratingId == request.auth.uid + '_' + request.resource.data.profileId;
+    }
+
+    // One "best photo" vote per (voter, profile), same shape and
+    // anonymity as `ratings` above — only the voter can ever read
+    // their own vote; the public signal is the aggregate written to
+    // `profiles/{profileId}.photoVoteCounts`, never this document.
+    match /photoVotes/{voteId} {
+      allow read: if isSignedIn() && resource.data.voterId == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.voterId == request.auth.uid
+        && request.resource.data.profileId != request.auth.uid
+        && voteId == request.auth.uid + '_' + request.resource.data.profileId;
+      allow update: if isSignedIn() && resource.data.voterId == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // Unlike ratings, comment authorship is meant to be visible (the
+    // app already shows commenters' names) — so comments are just
+    // normal public content, not anonymity-protected like ratings.
+    match /comments/{commentId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && request.resource.data.authorId == request.auth.uid
+        && request.resource.data.profileOwnerId != request.auth.uid
+        && commentsAllowed(request.resource.data.profileOwnerId)
+        && !hasBlocked(request.auth.uid, request.resource.data.profileOwnerId)
+        && !hasBlocked(request.resource.data.profileOwnerId, request.auth.uid);
+      // The author can change anything about their own comment; the
+      // profile owner may only blank+mark it deleted (never rewrite someone
+      // else's words), matching `CommentService.deleteComment` exactly.
+      allow update: if isSignedIn() && (
+        resource.data.authorId == request.auth.uid
+        || (resource.data.profileOwnerId == request.auth.uid
+            && request.resource.data.content == ''
+            && request.resource.data.isDeleted == true)
+      );
+      allow delete: if false;
+    }
+
+    match /commentReactions/{reactionId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update: if false;
+    }
+
+    // Private direct messages — readable only by the two participants,
+    // never the whole collection (unlike comments, which are public).
+    match /messages/{messageId} {
+      // Must check `participants` specifically (not senderId/recipientId,
+      // even though they're logically equivalent) — RemoteMessageRepository
+      // queries `where('participants', arrayContains: uid)`, and Firestore
+      // rejects a list query outright unless the rule is provably true
+      // for every document the query could match, evaluated against the
+      // exact field(s) the query filters on.
+      allow read: if isSignedIn() && request.auth.uid in resource.data.participants;
+      allow create: if isSignedIn()
+        && request.resource.data.senderId == request.auth.uid
+        && request.resource.data.recipientId != request.auth.uid
+        && messagesAllowed(request.resource.data.recipientId)
+        && !hasBlocked(request.auth.uid, request.resource.data.recipientId)
+        && !hasBlocked(request.resource.data.recipientId, request.auth.uid);
+      // Only the recipient can touch a message after creation, and only
+      // to flip isRead — the sender's own words stay theirs to delete,
+      // never to be rewritten by the other side.
+      allow update: if isSignedIn()
+        && resource.data.recipientId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['isRead']);
+      allow delete: if isSignedIn() && resource.data.senderId == request.auth.uid;
+    }
+
+    // 1:1 audio-call signaling. Same participants-field query-alignment
+    // requirement as messages: RemoteCallRepository's `currentCall`
+    // stream queries `where('participants', arrayContains: uid)`, so
+    // the read rule must check `participants` directly. A call requires
+    // an existing conversation (enforced client-side by `CallService`;
+    // there's no cheap way to re-derive "has an existing conversation"
+    // from a security rule without a second read per call attempt, so
+    // this rule enforces the same allow/block/privacy checks messages
+    // use and leaves the conversation-prerequisite check to the client).
+    match /calls/{callId} {
+      allow read: if isSignedIn() && request.auth.uid in resource.data.participants;
+      allow create: if isSignedIn()
+        && request.resource.data.callerId == request.auth.uid
+        && request.resource.data.calleeId != request.auth.uid
+        && request.resource.data.participants == [request.auth.uid, request.resource.data.calleeId]
+        && request.resource.data.status == 'ringing'
+        && callsAllowed(request.resource.data.calleeId)
+        && !hasBlocked(request.auth.uid, request.resource.data.calleeId)
+        && !hasBlocked(request.resource.data.calleeId, request.auth.uid);
+      // Three allowed transitions, each restricted to the field(s) it
+      // actually touches: the callee accepting (attaches `answer`, flips
+      // to active), the callee declining, and either side ending the call.
+      allow update: if isSignedIn() && request.auth.uid in resource.data.participants && (
+        (resource.data.calleeId == request.auth.uid
+          && resource.data.status == 'ringing'
+          && request.resource.data.status == 'active'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['answer', 'status']))
+        || (resource.data.calleeId == request.auth.uid
+          && resource.data.status == 'ringing'
+          && request.resource.data.status == 'declined'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']))
+        || (request.resource.data.status == 'ended'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status']))
+      );
+
+      match /callerCandidates/{candidateId} {
+        allow read: if isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/calls/$(callId)).data.participants;
+        allow create: if isSignedIn() && get(/databases/$(database)/documents/calls/$(callId)).data.callerId == request.auth.uid;
+      }
+      match /calleeCandidates/{candidateId} {
+        allow read: if isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/calls/$(callId)).data.participants;
+        allow create: if isSignedIn() && get(/databases/$(database)/documents/calls/$(callId)).data.calleeId == request.auth.uid;
+      }
+    }
+
+    // A battle is a matchup one device generates purely for itself to
+    // judge — the shown "audience split" is a deterministic estimate,
+    // never a real tally, so there is no reason for any other user to
+    // ever see or write another device's battles or votes. Immutable
+    // once created: no update/delete anywhere in the app's own flows.
+    match /battles/{battleId} {
+      allow read: if isSignedIn() && resource.data.generatedBy == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.generatedBy == request.auth.uid;
+    }
+
+    match /battleVotes/{voteId} {
+      allow read: if isSignedIn() && resource.data.voterId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.voterId == request.auth.uid;
+    }
+
+    // Unlike a battle's estimated split, "What Would You Choose" is a
+    // real vote tally — the prompts are hypothetical, not tied to any
+    // real profile's Life Score, so there's no formula to estimate
+    // from. Own vote stays private like a rating; the shared count
+    // lives in the small `choiceAggregates` doc below, same trust
+    // level as `photoVoteCounts`/`ratingSummary` (any signed-in device
+    // can bump it by one, never read/write another voter's own pick).
+    match /choiceVotes/{voteId} {
+      allow read: if isSignedIn() && resource.data.voterId == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.voterId == request.auth.uid
+        && voteId == request.auth.uid + '_' + request.resource.data.questionId;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    match /choiceAggregates/{questionId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // XP/coins/achievements/daily-challenge completions are all
+    // personal progression logs — never read by anyone but the device
+    // that earned them, and (like battles) append-only: nothing here
+    // is ever edited or removed by the app's own flows.
+    match /xpTransactions/{txId} {
+      allow read: if isSignedIn() && resource.data.profileId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.profileId == request.auth.uid;
+    }
+
+    // One doc per user (doc id = uid), not a growing per-event
+    // collection like the transaction logs above — an app-open day only
+    // needs "did this day happen," appended via arrayUnion.
+    match /appOpens/{uid} {
+      allow read, write: if isOwner(uid);
+    }
+
+    // This device's push-notification token, read only by the Cloud
+    // Functions in functions/index.js (the Admin SDK bypasses these
+    // rules entirely — this only governs client access) to send a
+    // notification when this user gets a new message or call.
+    match /fcmTokens/{uid} {
+      allow read, write: if isOwner(uid);
+    }
+
+    match /coinTransactions/{txId} {
+      allow read: if isSignedIn() && resource.data.profileId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.profileId == request.auth.uid;
+    }
+
+    match /cosmeticPurchases/{id} {
+      allow read: if isSignedIn() && resource.data.profileId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.profileId == request.auth.uid;
+    }
+
+    match /userAchievements/{id} {
+      allow read: if isSignedIn() && resource.data.profileId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.profileId == request.auth.uid;
+    }
+
+    match /challengeCompletions/{id} {
+      allow read: if isSignedIn() && resource.data.profileId == request.auth.uid;
+      allow create: if isSignedIn() && request.resource.data.profileId == request.auth.uid;
+    }
+  }
+}
