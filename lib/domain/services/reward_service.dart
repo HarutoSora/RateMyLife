@@ -23,6 +23,12 @@ class RewardService {
     XpReason.profileShared: 5,
     XpReason.battleVoted: 1,
     XpReason.choiceMade: 3,
+
+    /// The one deliberate exception to "smaller than the matching XP
+    /// reward" above — there's no XP counterpart, and watching a full
+    /// rewarded ad is a bigger ask than a quick rating or vote.
+    /// User-requested value, matching the "Buy Coins" packaging.
+    XpReason.adWatched: 300,
   };
 
   CoinTransaction award({required String profileId, required XpReason reason}) {

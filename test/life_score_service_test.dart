@@ -38,6 +38,59 @@ void main() {
       final master = service.calculate(_profile(education: 'Master'));
       expect(master.education, greaterThan(bachelor.education));
     });
+
+    group('applyDelta (nuke damage / cure)', () {
+      test('reduces only the targeted category and recomputes overall', () {
+        final base = service.calculate(_profile());
+        final damaged = service.applyDelta(base, 'career', -5);
+        expect(damaged.career, base.career - 5);
+        expect(damaged.financial, base.financial);
+        expect(damaged.education, base.education);
+        expect(damaged.overall, isNot(equals(base.overall)));
+      });
+
+      test('clamps at 0 rather than going negative', () {
+        final base = service.calculate(_profile());
+        final obliterated = service.applyDelta(base, 'social', -1000);
+        expect(obliterated.social, 0);
+      });
+
+      test('clamps at 100 rather than exceeding it', () {
+        final base = service.calculate(_profile());
+        final healed = service.applyDelta(base, 'career', 1000);
+        expect(healed.career, 100);
+      });
+
+      test('a positive delta (cure) partially reverses a prior negative delta (nuke)', () {
+        final base = service.calculate(_profile());
+        final damaged = service.applyDelta(base, 'lifestyle', -5);
+        final healed = service.applyDelta(damaged, 'lifestyle', 3);
+        expect(healed.lifestyle, base.lifestyle - 2);
+      });
+
+      test('an unrecognized attribute is a no-op', () {
+        final base = service.calculate(_profile());
+        final result = service.applyDelta(base, 'not_a_real_attribute', -5);
+        expect(result.overall, base.overall);
+        expect(result.career, base.career);
+      });
+    });
+
+    group('applyDamage (a full nuke-damage map)', () {
+      test('applies every entry in the map', () {
+        final base = service.calculate(_profile());
+        final damaged = service.applyDamage(base, {'career': -5, 'social': -10});
+        expect(damaged.career, base.career - 5);
+        expect(damaged.social, base.social - 10);
+      });
+
+      test('an empty map returns the score unchanged', () {
+        final base = service.calculate(_profile());
+        final result = service.applyDamage(base, const {});
+        expect(result.career, base.career);
+        expect(result.overall, base.overall);
+      });
+    });
   });
 }
 

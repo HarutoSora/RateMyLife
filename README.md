@@ -12,6 +12,8 @@
 [![Dart](https://img.shields.io/badge/Dart-3.13-3E8EFF?style=for-the-badge&logo=dart&logoColor=white)](https://dart.dev)
 [![Firebase](https://img.shields.io/badge/Firebase-Firestore%20%7C%20Auth%20%7C%20Storage-FFC530?style=for-the-badge&logo=firebase&logoColor=black)](https://firebase.google.com)
 [![Platform](https://img.shields.io/badge/Platform-Android%20first-39FF88?style=for-the-badge&logo=android&logoColor=white)](#)
+[![Tests](https://img.shields.io/badge/Tests-417%20passing-39FF88?style=for-the-badge&logo=checkmarx&logoColor=white)](#-testing)
+[![Security](https://img.shields.io/badge/Firestore%20Rules-Emulator--Verified-FF3D9A?style=for-the-badge&logo=firebase&logoColor=white)](#-security)
 
 </div>
 
@@ -33,6 +35,8 @@ Create Life → Get Score → Publish → People Discover → People Rate
       └──────────── Share ← Compare ← Receive Rating ────────┘
 ```
 
+...and around that loop, a whole arcade of ways to **play**, **earn**, and **come back tomorrow**.
+
 ## 💜 Features
 
 <table>
@@ -45,13 +49,14 @@ Create Life → Get Score → Publish → People Discover → People Rate
 - Tinder-style swipe rating (1–10, no self-rating)
 - Real percentiles — age group, country, overall
 - Discover, Leaderboard, "New & Rising", "Biggest Gaps"
+- **✨ Get Life Advice** — a rule-based "life coach" sheet with a ~230-variant tip bank, personalized to your real background
 
 **💬 Social**
-- Direct messages & 1:1 audio calls
+- Direct messages & 1:1 audio calls (WebRTC)
 - Comments, reactions, best-photo voting
 - Block / report on everything, always
-- Life Battles — head-to-head profile duels
-- "What Would You Choose?" — daily would-you-rather with **real** community results
+- **⚔️ Life Battles** — head-to-head profile duels with a full VS-intro → countdown → reveal arcade sequence
+- **🤔 Would You Choose?** — daily would-you-rather with **real** community results
 
 </td>
 <td width="50%" valign="top">
@@ -60,13 +65,18 @@ Create Life → Get Score → Publish → People Discover → People Rate
 - XP, levels, ranks, daily streaks
 - Daily challenges, achievements, coins
 - Cosmetic profile frames
-- Local daily-challenge reminder notifications
+- **🔮 What If? Simulator** — live-preview any life change against the real scoring engine, never saved
+- **☢️ Nuke / Cure** — spend coins to dent a rival's score, or heal your own — pure chaos, zero worth-judgment
 
-**🔒 Privacy by design**
+**💰 Monetization**
+- Google AdMob — banner + rewarded video (300 free coins)
+- Google Play Billing — 5 coin packages, real store pricing
+- Every reward funnels through one auditable coin/XP ledger
+
+**🔒 Privacy & security by design**
 - Anonymous ratings — not even the profile owner can see who rated them
 - Income/savings hidden by default, opt-in only
-- Every private field is a separate, server-rule-protected document
-- Firestore security rules enforce every guarantee client-side code makes
+- Firestore rules **validate every reward amount and score bound**, not just "who's allowed to write" — see [🛡️ Security](#-security)
 
 </td>
 </tr>
@@ -89,6 +99,7 @@ Create Life → Get Score → Publish → People Discover → People Rate
 |---|---|
 | App | Flutter 3.47 / Dart 3.13, Material 3, Riverpod |
 | Backend | Firebase — Auth (anonymous), Firestore, Storage, Cloud Functions |
+| Ads / Payments | Google Mobile Ads SDK, Google Play Billing (`in_app_purchase`) |
 | Fonts | Baloo 2 (display) + Nunito (body), via `google_fonts` |
 | Calls | WebRTC (`flutter_webrtc`), STUN-only signaling over Firestore |
 
@@ -104,15 +115,29 @@ flutter run
 
 `android/app/google-services.json` and `lib/firebase_options.dart` aren't committed — they identify a specific Firebase project, so regenerate them for your own via [`flutterfire configure`](https://firebase.google.com/docs/flutter/setup).
 
-To run the test suite:
+## 🧪 Testing
 
 ```bash
-flutter test
+flutter test          # 417 tests — pure services, repositories, controller integrations, widgets
+flutter analyze        # zero-issue baseline
 ```
+
+Every `Remote*Repository` gets round-trip, no-duplicate-write, and cross-user-isolation coverage against `fake_cloud_firestore` — but the fake doesn't enforce security rules, so `firestore.rules` changes get a **separate**, real check (see below).
+
+## 🛡️ Security
+
+This app's coin/XP/score economy is a real, live-money-adjacent system — a rewarded ad grants coins, coins buy real Google Play products, and a compromised economy is a real problem, not just a bug. So `firestore.rules` doesn't just gate *who* can write; it validates *what* they're allowed to write:
+
+- **Every reward transaction is amount-checked.** `xpTransactions`/`coinTransactions` — the ledger `Wallet`/`LevelInfo` are summed from — validate the `amount` against the real reward tables server-side, not just that you're writing to your own record. A forged `{amount: 999999999}` write is rejected outright.
+- **Every Life Score category is bounded 0-100**, on every write path — the same invariant the scoring engine itself always guarantees, now enforced independently of the client.
+- **Cross-user writes are delta-bounded.** A "nuke" attacker can change *exactly one* score category by *exactly one nuke's worth* of damage — never an arbitrary value on someone else's profile.
+- **A single write can't mint an arbitrary balance.** Even the profile owner's own writes are capped to the largest legitimate single-grant amount.
+
+Rules changes aren't just syntax-checked before shipping — they're run against a real, temporarily-spun-up **Firestore emulator** with [`@firebase/rules-unit-testing`](https://firebase.google.com/docs/rules/unit-tests), asserting that every legitimate reward still succeeds and every forged/out-of-bound/tampered write fails, before the emulator is torn back down. Nothing here is deployed on faith.
 
 ## 🌈 Design system
 
-Dark-first "neon arcade" identity — deep purple/navy grounds, violet glow, gold/pink/blue gradient CTAs.
+Dark-first "neon arcade" identity — deep purple/navy grounds, violet glow, gold/pink/blue gradient CTAs, purposeful particle bursts and count-up numbers for every reward moment.
 
 <p>
 <img src="https://img.shields.io/badge/-9B4DFF?style=flat-square" width="60" height="24" alt="purple"/>
@@ -122,7 +147,7 @@ Dark-first "neon arcade" identity — deep purple/navy grounds, violet glow, gol
 <img src="https://img.shields.io/badge/-39FF88?style=flat-square" width="60" height="24" alt="green"/>
 </p>
 
-Full token reference lives in `lib/core/theme/` and `docs/DESIGN_SYSTEM.md`.
+Full token reference lives in `lib/core/theme/` and `docs/DESIGN_SYSTEM.md`. Full feature-by-feature build log (what shipped, what's partial, what's deliberately not done) lives in `docs/FEATURE_STATUS.md`.
 
 ---
 

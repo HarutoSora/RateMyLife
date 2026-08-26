@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // START: FlutterFire Configuration
@@ -5,6 +7,18 @@ plugins {
     // END: FlutterFire Configuration
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Release signing — real Play Store uploads need a proper upload key,
+// not the debug keystore. `key.properties` is git-ignored (see
+// android/.gitignore) and never committed; its absence (a fresh
+// checkout without the keystore) falls back to debug signing so
+// `flutter run --release` still works locally instead of failing.
+val keystorePropertiesFile = rootProject.file("key.properties")
+val keystoreProperties = Properties()
+val hasReleaseKeystore = keystorePropertiesFile.exists()
+if (hasReleaseKeystore) {
+    keystoreProperties.load(keystorePropertiesFile.inputStream())
 }
 
 android {
@@ -36,11 +50,28 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasReleaseKeystore) {
+            create("release") {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            // Real upload-key signing when key.properties/the keystore are
+            // present (every dev machine that's actually shipping a build);
+            // debug signing otherwise, so a fresh checkout without the
+            // keystore can still `flutter run --release` locally.
+            signingConfig = if (hasReleaseKeystore) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
@@ -50,6 +81,18 @@ android {
 kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
+    }
+}
+
+// google_mobile_ads (play-services-ads-api) transitively pulls a very old
+// androidx.work:work-runtime:2.7.0 (with room-runtime:2.2.5) that crashes
+// building its Room-backed WorkDatabase against this project's much newer
+// AndroidX/Kotlin stack ("Failed to create an instance of
+// androidx.work.impl.WorkDatabase" on app start). Nothing else here uses
+// WorkManager directly, so forcing a current version is safe.
+configurations.all {
+    resolutionStrategy {
+        force("androidx.work:work-runtime:2.10.0")
     }
 }
 

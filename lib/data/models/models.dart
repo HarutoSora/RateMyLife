@@ -391,6 +391,25 @@ enum XpReason {
   /// Coins spent on a profile boost (see `ProfileBoost`) — always a
   /// negative-amount transaction, never used for XP.
   boostPurchased,
+
+  /// Watched a rewarded ad to completion (see `AdRepository`). Coins
+  /// only, never used for XP — watching an ad isn't a "life" action.
+  adWatched,
+
+  /// Coins spent nuking another profile's Life Score (see
+  /// `NukeService`) — always a negative-amount transaction, like
+  /// `cosmeticPurchased`.
+  nukeUsed,
+
+  /// Coins spent on a cure potion to heal your own nuke damage (see
+  /// `NukeService`) — always a negative-amount transaction.
+  curePotionUsed,
+
+  /// Real-money coin purchase via Google Play Billing (see
+  /// `PurchaseRepository`). The amount is per-product (`PurchaseConfig.
+  /// coinsForProduct`), not looked up from `RewardService.coinRewards`
+  /// like the other earning reasons — coins only, never used for XP.
+  coinsPurchased,
 }
 
 /// A single XP award, kept as an append-only log (mirrors the `Rating`
@@ -743,6 +762,8 @@ class UserProfile {
     this.equippedFrameId,
     this.socialLinks = const {},
     this.photoVoteCounts = const {},
+    this.nukeDamage = const {},
+    this.nukesSurvived = 0,
   });
 
   final String id;
@@ -817,6 +838,22 @@ class UserProfile {
   /// another voter's individual pick, only this running total.
   final Map<String, int> photoVoteCounts;
 
+  /// Active nuke damage by attribute (see `NukeService`), always <= 0 —
+  /// `ProfileService.recalculate` subtracts these from the freshly
+  /// computed `LifeScoreService.calculate` result every time, so damage
+  /// persists across ordinary profile edits instead of being silently
+  /// wiped by the next recalculation. A cure potion moves an entry back
+  /// toward 0; it never goes positive. Server-maintained for a nuke
+  /// (same transactional-aggregate pattern as `photoVoteCounts`), owner-
+  /// written for a cure (a normal profile edit, since it only ever
+  /// touches your own damage).
+  final Map<String, int> nukeDamage;
+
+  /// Lifetime count of nuke attacks received — the public "X nukes
+  /// survived" stat shown in Discover. Never reveals who attacked; see
+  /// `NukeEvent`'s doc comment.
+  final int nukesSurvived;
+
   ProfilePhoto? get profilePhoto {
     final sorted = [...photos]..sort((a, b) => a.order.compareTo(b.order));
     for (final photo in sorted) {
@@ -879,6 +916,8 @@ class UserProfile {
     String? equippedFrameId,
     Map<String, String>? socialLinks,
     Map<String, int>? photoVoteCounts,
+    Map<String, int>? nukeDamage,
+    int? nukesSurvived,
   }) {
     return UserProfile(
       id: id ?? this.id,
@@ -926,6 +965,8 @@ class UserProfile {
       equippedFrameId: equippedFrameId ?? this.equippedFrameId,
       socialLinks: socialLinks ?? this.socialLinks,
       photoVoteCounts: photoVoteCounts ?? this.photoVoteCounts,
+      nukeDamage: nukeDamage ?? this.nukeDamage,
+      nukesSurvived: nukesSurvived ?? this.nukesSurvived,
     );
   }
 
@@ -975,6 +1016,8 @@ class UserProfile {
         'equippedFrameId': equippedFrameId,
         'socialLinks': socialLinks,
         'photoVoteCounts': photoVoteCounts,
+        'nukeDamage': nukeDamage,
+        'nukesSurvived': nukesSurvived,
       };
 
   factory UserProfile.fromJson(Map<String, dynamic> json) => UserProfile(
@@ -1038,6 +1081,8 @@ class UserProfile {
         equippedFrameId: json['equippedFrameId'] as String?,
         socialLinks: Map<String, String>.from(json['socialLinks'] as Map? ?? const {}),
         photoVoteCounts: Map<String, int>.from(json['photoVoteCounts'] as Map? ?? const {}),
+        nukeDamage: Map<String, int>.from(json['nukeDamage'] as Map? ?? const {}),
+        nukesSurvived: json['nukesSurvived'] as int? ?? 0,
       );
 }
 
@@ -1187,6 +1232,58 @@ class PhotoVote {
         voterId: json['voterId'] as String,
         profileId: json['profileId'] as String,
         photoId: json['photoId'] as String,
+        createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ?? DateTime.now(),
+      );
+}
+
+/// One paid attack against another profile's Life Score (see
+/// `NukeService`) — [attribute] is one of `LifeScore.breakdown`'s
+/// lowercase keys (`career`, `financial`, `education`, `independence`,
+/// `social`, `lifestyle`, `wellbeing`), [damage] is always negative.
+/// Only ever readable by the attacker's own device — see
+/// `firestore.rules`' `nukeEvents` match — so the target never learns
+/// who attacked them, mirroring [Rating]'s anonymity. The target's own
+/// `UserProfile.nukesSurvived`/`nukeDamage` are the public signal.
+class NukeEvent {
+  const NukeEvent({
+    required this.id,
+    required this.attackerId,
+    required this.targetId,
+    required this.targetName,
+    required this.attribute,
+    required this.damage,
+    required this.createdAt,
+  });
+
+  final String id;
+  final String attackerId;
+  final String targetId;
+
+  /// Denormalized at attack time purely for this device's own "sent"
+  /// history display — the target's live display name may since have
+  /// changed, and that's fine, this is a receipt, not a live lookup.
+  final String targetName;
+  final String attribute;
+  final int damage;
+  final DateTime createdAt;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'attackerId': attackerId,
+        'targetId': targetId,
+        'targetName': targetName,
+        'attribute': attribute,
+        'damage': damage,
+        'createdAt': createdAt.toIso8601String(),
+      };
+
+  factory NukeEvent.fromJson(Map<String, dynamic> json) => NukeEvent(
+        id: json['id'] as String,
+        attackerId: json['attackerId'] as String? ?? '',
+        targetId: json['targetId'] as String? ?? '',
+        targetName: json['targetName'] as String? ?? 'Anonymous',
+        attribute: json['attribute'] as String? ?? '',
+        damage: json['damage'] as int? ?? 0,
         createdAt: DateTime.tryParse(json['createdAt'] as String? ?? '') ?? DateTime.now(),
       );
 }

@@ -19,14 +19,112 @@ service cloud.firestore {
     // defaults apply) rather than evaluating `get()` on a document that
     // doesn't exist, which denies outright instead of returning "not
     // found" (see the `ratings` rule below for the same gotcha).
+    // `.get('allowComments', true)`, not raw `.allowComments` — a
+    // profile created before this field existed has no such key at
+    // all, and Firestore rules error out (denying the whole request)
+    // on a missing-key dot-access rather than falling back to the
+    // `ProfilePrivacy.fromJson` default (`?? true`) or an old profile
+    // silently blocks comments that the client-rendered privacy
+    // toggle claims are allowed.
     function commentsAllowed(profileOwnerId) {
       return !exists(/databases/$(database)/documents/profiles/$(profileOwnerId))
         || (publicProfile(profileOwnerId).privacy.visibility == 'public'
-            && publicProfile(profileOwnerId).privacy.allowComments == true);
+            && publicProfile(profileOwnerId).privacy.get('allowComments', true) == true);
     }
 
     function hasBlocked(blockerUid, blockedUid) {
       return exists(/databases/$(database)/documents/profiles/$(blockerUid)/blocked/$(blockedUid));
+    }
+
+    // Every `LifeScore` category `LifeScoreService._clamp` ever produces
+    // is 0-100 — no legitimate write from the real app can ever fall
+    // outside this range. Applied to both the owner's own profile writes
+    // and a nuke attacker's cross-profile write below, so neither path
+    // can plant an out-of-range score (e.g. `overall: 9999`) via a raw
+    // write that bypasses the app's own scoring engine entirely.
+    function validScoreBounds(score) {
+      return score.overall >= 0 && score.overall <= 100
+        && score.career >= 0 && score.career <= 100
+        && score.financial >= 0 && score.financial <= 100
+        && score.education >= 0 && score.education <= 100
+        && score.independence >= 0 && score.independence <= 100
+        && score.social >= 0 && score.social <= 100
+        && score.lifestyle >= 0 && score.lifestyle <= 100
+        && score.wellbeing >= 0 && score.wellbeing <= 100;
+    }
+
+    // Mirrors `ProgressionService.xpRewards` / `RewardService.
+    // coinRewards` exactly — `xpTransactions`/`coinTransactions` below
+    // are the ledger `Wallet`/`LevelInfo` are summed from, so without
+    // this a signed-in device could write a transaction doc with an
+    // arbitrary `amount` directly (bypassing the app's UI and its reward
+    // tables entirely) and inflate its own balance/XP without limit.
+    // IMPORTANT: if either reward table in Dart changes, this must be
+    // updated to match, or the app's own legitimate grants start being
+    // rejected — this duplication is a real, disclosed maintenance cost
+    // of validating amounts without a Cloud-Function-only write path.
+    function validXpAmount(reason, amount) {
+      return (reason == 'profileCompleted' && amount == 150)
+        || (reason == 'profileUpdated' && amount == 20)
+        || (reason == 'photoAdded' && amount == 30)
+        || (reason == 'ratingGiven' && amount == 15)
+        || (reason == 'profileShared' && amount == 25)
+        || (reason == 'battleVoted' && amount == 10)
+        || (reason == 'choiceMade' && amount == 15)
+        // Variable per-catalog-entry bonuses (`AchievementDefinition.
+        // xpReward` / `DailyChallenge.xpReward`) — exact membership in
+        // the real catalog's value set, not just an upper bound.
+        || (reason == 'achievementUnlocked' && amount in [50, 75, 100, 150, 200, 300, 500, 1000])
+        || (reason == 'dailyChallengeCompleted' && amount in [40, 50, 60, 75, 100]);
+      // Every other reason (adWatched, cosmeticPurchased, nukeUsed,
+      // curePotionUsed, coinsPurchased, boostPurchased) is coins-only or
+      // unimplemented — never valid in xpTransactions.
+    }
+
+    function validCoinAmount(reason, amount) {
+      return (reason == 'profileCompleted' && amount == 20)
+        || (reason == 'profileUpdated' && amount == 3)
+        || (reason == 'photoAdded' && amount == 5)
+        || (reason == 'ratingGiven' && amount == 2)
+        || (reason == 'profileShared' && amount == 5)
+        || (reason == 'battleVoted' && amount == 1)
+        || (reason == 'choiceMade' && amount == 3)
+        || (reason == 'adWatched' && amount == 300)
+        || (reason == 'dailyChallengeCompleted' && amount in [8, 10, 12, 15, 20])
+        // Spends are negative-amount transactions on the same ledger —
+        // `CosmeticFrame.cost` (0 for 'none', 150 for every real frame).
+        || (reason == 'cosmeticPurchased' && amount in [0, -150])
+        // `NukeService.attackCost` / `.curePotionCost` — rules can't
+        // reference a Dart constant, so these are spelled out as
+        // literals; keep in sync if either ever changes.
+        || (reason == 'nukeUsed' && amount == -5000)
+        || (reason == 'curePotionUsed' && amount == -1000)
+        // `PurchaseConfig.coinsForProduct`'s exact 5 package sizes.
+        || (reason == 'coinsPurchased' && amount in [500, 1200, 2500, 6000, 15000]);
+      // achievementUnlocked is XP-only by design (never grants coins);
+      // boostPurchased is unimplemented — neither is ever valid here.
+    }
+
+    // Applied only to the OWNER's own profile writes (the non-owner nuke
+    // branch below has its own, tighter, delta-bounded check). Bounds a
+    // single write's `coins`/`xp` INCREASE to the largest legitimate
+    // single-grant amount that can ever appear in one `saveCurrentProfile`
+    // call — `AppController._applyXpTransaction`/`_applyCoinTransaction`
+    // each persist exactly one transaction's delta per write, never a
+    // batched sum, so this bound never rejects a real grant. It does not
+    // stop a modified client from *repeatedly* writing up to that amount
+    // (Firestore rules can't rate-limit), but it does close the
+    // one-shot "set my balance to 999999999" exploit outright, and
+    // `validScoreBounds` above closes the equivalent one-shot score
+    // exploit completely (0-100 is an absolute bound, not just a
+    // per-write cap).
+    function ownerProfileUpdateIsSafe() {
+      return (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['coins'])
+              || request.resource.data.coins - resource.data.get('coins', 0) <= 15000)
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['xp'])
+            || request.resource.data.xp - resource.data.get('xp', 0) <= 1000)
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['score'])
+            || validScoreBounds(request.resource.data.score));
     }
 
     // Same "missing profile doc = allowed" reasoning as commentsAllowed.
@@ -56,19 +154,47 @@ service cloud.firestore {
     // owner's own block list live in subcollections below, never here.
     match /profiles/{uid} {
       allow read: if true;
-      allow create, delete: if isOwner(uid);
-      // The owner can change anything; any other signed-in user may
-      // touch only `ratingSummary` (the running aggregate a rater's
-      // device updates transactionally when it submits/edits/removes
-      // its own rating), `viewCount` (incremented by a viewer's
-      // device each time it opens this profile), or `photoVoteCounts`
-      // (the same transactional-aggregate pattern, for best-photo
-      // votes). These are the only ways anyone but the owner can write
-      // to a profile document.
-      allow update: if isOwner(uid)
+      // A brand-new profile always starts at 0 coins/0 XP — `UserProfile`'s
+      // own constructor defaults, never overridden by `ProfileService`/
+      // the wizard's create flow (the first real grant, `profileCompleted`,
+      // is a separate subsequent update, not part of creation) — so a
+      // create claiming otherwise is definitely not the real app.
+      allow create: if isOwner(uid)
+        && request.resource.data.get('coins', 0) == 0
+        && request.resource.data.get('xp', 0) == 0
+        && validScoreBounds(request.resource.data.score);
+      allow delete: if isOwner(uid);
+      // The owner can change anything, subject to `ownerProfileUpdateIsSafe`
+      // (see above — bounds a single write's coins/XP increase to the
+      // largest real single-grant amount, and keeps `score` within the
+      // 0-100 range the real scoring engine always produces). Any other
+      // signed-in user may touch only `ratingSummary` (the running
+      // aggregate a rater's device updates transactionally when it
+      // submits/edits/removes its own rating), `viewCount` (incremented
+      // by a viewer's device each time it opens this profile),
+      // `photoVoteCounts` (the same transactional-aggregate pattern, for
+      // best-photo votes), or `nukeDamage`/`nukesSurvived`/`score`
+      // together (a nuke attacker's device applying
+      // `NukeService.damagePerNuke` to one Life Score attribute — see
+      // `RemoteNukeRepository.attack`), now bounded to a single real
+      // nuke's worth of damage rather than an arbitrary score value.
+      // Like the `ratingSummary`/`viewCount`/`photoVoteCounts`
+      // aggregates, the exact delta arithmetic still isn't fully
+      // re-derived here — the app trusts its own client logic for that,
+      // same disclosed posture as every other transactional aggregate on
+      // this document; `request.auth.uid != uid` just keeps the owner's
+      // own edits on the unrestricted (but now bounded) branch above.
+      allow update: if (isOwner(uid) && ownerProfileUpdateIsSafe())
         || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ratingSummary']))
         || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount']))
-        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['photoVoteCounts']));
+        || (isSignedIn() && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['photoVoteCounts']))
+        || (isSignedIn() && request.auth.uid != uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['nukeDamage', 'nukesSurvived', 'score'])
+            && request.resource.data.nukesSurvived == resource.data.get('nukesSurvived', 0) + 1
+            && request.resource.data.nukeDamage.diff(resource.data.get('nukeDamage', {})).affectedKeys().size() == 1
+            && validScoreBounds(request.resource.data.score)
+            && request.resource.data.score.overall <= resource.data.score.get('overall', 100)
+            && request.resource.data.score.overall >= resource.data.score.get('overall', 100) - 2);
 
       match /private/income {
         allow read: if isOwner(uid) || publicProfile(uid).privacy.showIncome == true;
@@ -123,6 +249,19 @@ service cloud.firestore {
         && request.resource.data.profileId != request.auth.uid
         && voteId == request.auth.uid + '_' + request.resource.data.profileId;
       allow update: if isSignedIn() && resource.data.voterId == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // One doc per nuke attack. Only the attacker can ever read it — the
+    // target never learns who attacked them, only that its own
+    // `nukeDamage`/`nukesSurvived`/`score` changed (see the `profiles`
+    // update rule above). Immutable once created, like `battleVotes`.
+    match /nukeEvents/{eventId} {
+      allow read: if isSignedIn() && resource.data.attackerId == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.attackerId == request.auth.uid
+        && request.resource.data.targetId != request.auth.uid;
+      allow update: if false;
       allow delete: if false;
     }
 
@@ -265,10 +404,16 @@ service cloud.firestore {
     // XP/coins/achievements/daily-challenge completions are all
     // personal progression logs — never read by anyone but the device
     // that earned them, and (like battles) append-only: nothing here
-    // is ever edited or removed by the app's own flows.
+    // is ever edited or removed by the app's own flows. `amount` is
+    // validated against `validXpAmount` above — without this, a signed-in
+    // device could write a doc with an arbitrary amount directly and
+    // inflate its own XP total without limit (`Wallet`/`LevelInfo` are
+    // summed from this collection client-side).
     match /xpTransactions/{txId} {
       allow read: if isSignedIn() && resource.data.profileId == request.auth.uid;
-      allow create: if isSignedIn() && request.resource.data.profileId == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.profileId == request.auth.uid
+        && validXpAmount(request.resource.data.reason, request.resource.data.amount);
     }
 
     // One doc per user (doc id = uid), not a growing per-event
@@ -286,9 +431,13 @@ service cloud.firestore {
       allow read, write: if isOwner(uid);
     }
 
+    // `amount` validated against `validCoinAmount` above — same reasoning
+    // as `xpTransactions`, for the coin ledger `Wallet` is summed from.
     match /coinTransactions/{txId} {
       allow read: if isSignedIn() && resource.data.profileId == request.auth.uid;
-      allow create: if isSignedIn() && request.resource.data.profileId == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.profileId == request.auth.uid
+        && validCoinAmount(request.resource.data.reason, request.resource.data.amount);
     }
 
     match /cosmeticPurchases/{id} {

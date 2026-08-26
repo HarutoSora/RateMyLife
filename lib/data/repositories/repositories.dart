@@ -7,15 +7,19 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:flutter/foundation.dart' show VoidCallback;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart' hide Message;
 import 'package:flutter_webrtc/flutter_webrtc.dart';
+import 'package:google_mobile_ads/google_mobile_ads.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:timezone/data/latest.dart' as tzdata;
 import 'package:timezone/timezone.dart' as tz;
 import 'package:uuid/uuid.dart';
 
+import '../../core/ads/ad_config.dart';
 import '../../domain/services/achievement_service.dart';
 import '../../domain/services/battle_service.dart';
 import '../../domain/services/choice_service.dart';
@@ -26,6 +30,7 @@ import '../../domain/services/daily_challenge_service.dart';
 import '../../domain/services/gap_service.dart';
 import '../../domain/services/level_service.dart';
 import '../../domain/services/message_service.dart';
+import '../../domain/services/nuke_service.dart';
 import '../../domain/services/percentile_service.dart';
 import '../../domain/services/photo_quality_service.dart';
 import '../../domain/services/photo_service.dart';
@@ -36,6 +41,7 @@ import '../../domain/services/rating_service.dart';
 import '../../domain/services/reward_service.dart';
 import '../../domain/services/streak_service.dart';
 import '../../domain/services/trending_service.dart';
+import '../../domain/scoring/life_score_service.dart';
 import '../mock/mock_profiles.dart';
 import '../models/models.dart';
 
@@ -121,6 +127,24 @@ abstract class RatingRepository {
 abstract class PhotoVoteRepository {
   Future<List<PhotoVote>> loadVotes();
   Future<void> saveVotes(List<PhotoVote> votes);
+}
+
+abstract class NukeRepository {
+  /// This device's own sent-attack history — see `NukeEvent`'s doc
+  /// comment for why a target never gets the symmetric "received" list.
+  Future<List<NukeEvent>> loadSentHistory();
+
+  /// Records a nuke attack against [target] on [attribute] and (for a
+  /// real backend) updates the target's public `nukeDamage`/
+  /// `nukesSurvived`/`score` fields transactionally — the same
+  /// aggregate pattern `PhotoVoteRepository.saveVotes` uses for
+  /// `photoVoteCounts`. Returns the event so the caller can append it
+  /// to its own in-memory history without a second load.
+  Future<NukeEvent> attack({
+    required String attackerId,
+    required UserProfile target,
+    required String attribute,
+  });
 }
 
 abstract class ProgressionRepository {
@@ -258,9 +282,13 @@ abstract class SettingsRepository {
 }
 
 /// Real, OS-level notifications (Android notification tray), not an
-/// in-app-only notification center. Entirely local/on-device — no
-/// server, no Firebase Cloud Messaging — since daily-challenge state is
-/// already local-first data with nothing server-side to push from.
+/// in-app-only notification center. The scheduled daily-challenge
+/// reminder is entirely local/on-device (no server involved) — but
+/// [showNotification] is also used to display a push notification's
+/// content when it arrives while the app is in the foreground (Android
+/// only auto-displays one itself for background/killed delivery), so
+/// this repository is no longer purely local-only end to end. See
+/// `PushNotificationRepository` for the FCM token/message side.
 abstract class NotificationRepository {
   /// Android 13+ requires this at runtime before any notification can
   /// show; a no-op returning true on platforms/versions that don't
@@ -270,6 +298,55 @@ abstract class NotificationRepository {
   Future<void> scheduleDailyChallengeReminder();
 
   Future<void> cancelDailyChallengeReminder();
+
+  /// Shows an immediate, one-off notification — used for a message or
+  /// call arriving via FCM while the app is already in the foreground.
+  /// [payload] round-trips back out through [notificationTaps] if the
+  /// user taps this specific notification.
+  Future<void> showNotification({required String title, required String body, String? payload});
+
+  /// Fires the payload of whichever notification this device's user
+  /// just tapped — only for notifications shown via [showNotification]
+  /// with a non-null payload (the scheduled daily reminder never sets
+  /// one, so tapping it never fires here).
+  Stream<String> get notificationTaps;
+}
+
+/// This device's Firebase Cloud Messaging registration, plus the
+/// foreground-message stream — the two things needed so a Cloud
+/// Function (see `functions/index.js`) can reach this device with a
+/// real push notification for a new message or incoming call, not just
+/// the in-app live-listener updates that only work while the app is
+/// open. Background/killed-app delivery needs no code here at all —
+/// Android auto-displays a system notification for the "notification"
+/// payload the Cloud Function sends; only the foreground case (where
+/// the OS doesn't do that automatically) needs handling.
+abstract class PushNotificationRepository {
+  /// Requests notification permission and, if granted, registers this
+  /// device's current token — idempotent, safe to call on every app
+  /// launch, mirroring the daily reminder's own re-schedule-on-launch
+  /// pattern. A no-op when signed out, since there's no account for a
+  /// Cloud Function to look up a token against.
+  Future<void> registerDevice();
+
+  /// Removes this device's registration — called when the user turns
+  /// notifications off, so a Cloud Function has nothing to send to
+  /// even though the OS-level permission itself stays granted (turning
+  /// that off requires the user going to system settings, outside this
+  /// app's control).
+  Future<void> unregisterDevice();
+
+  /// Messages that arrive while the app is in the foreground.
+  Stream<RemoteMessage> get foregroundMessages;
+
+  /// Fires when this device's user taps a background-delivered push
+  /// (app was open in the background, not foreground and not killed).
+  Stream<RemoteMessage> get openedMessages;
+
+  /// The push that cold-started the app, if the user tapped one while
+  /// it was fully killed — null otherwise. Only meaningful once, right
+  /// after launch.
+  Future<RemoteMessage?> getInitialMessage();
 }
 
 class LocalNotificationRepository implements NotificationRepository {
@@ -282,13 +359,31 @@ class LocalNotificationRepository implements NotificationRepository {
   static const _channelId = 'daily_challenges';
   static const _channelName = 'Daily Challenges';
 
+  // Separate from the daily-challenge channel above — a message/call
+  // arriving is a different kind of notification than a daily nudge,
+  // and Android's per-channel settings (sound, importance) shouldn't
+  // be shared between the two.
+  static const _activityChannelId = 'activity';
+  static const _activityChannelName = 'Messages & Calls';
+
+  final _tapController = StreamController<String>.broadcast();
+
   Future<void> _ensureInitialized() async {
     if (_initialized) return;
     tzdata.initializeTimeZones();
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
-    await _plugin.initialize(const InitializationSettings(android: androidInit));
+    await _plugin.initialize(
+      const InitializationSettings(android: androidInit),
+      onDidReceiveNotificationResponse: (response) {
+        final payload = response.payload;
+        if (payload != null) _tapController.add(payload);
+      },
+    );
     _initialized = true;
   }
+
+  @override
+  Stream<String> get notificationTaps => _tapController.stream;
 
   @override
   Future<bool> requestPermission() async {
@@ -325,6 +420,27 @@ class LocalNotificationRepository implements NotificationRepository {
     await _plugin.cancel(_dailyChallengeNotificationId);
   }
 
+  @override
+  Future<void> showNotification({required String title, required String body, String? payload}) async {
+    await _ensureInitialized();
+    await _plugin.show(
+      // Unique-enough id — this is a one-off, not something a later
+      // call needs to reference (e.g. to cancel), unlike the daily
+      // reminder's fixed id.
+      DateTime.now().millisecondsSinceEpoch.remainder(1 << 31),
+      title,
+      body,
+      const NotificationDetails(
+        android: AndroidNotificationDetails(
+          _activityChannelId,
+          _activityChannelName,
+          channelDescription: 'New messages and incoming calls.',
+        ),
+      ),
+      payload: payload,
+    );
+  }
+
   /// Built from plain `DateTime.now()` (already device-local — Dart
   /// gets that from the OS natively) rather than `tz.TZDateTime.now
   /// (tz.local)`. `tz.local` defaults to UTC until something calls
@@ -345,6 +461,230 @@ class LocalNotificationRepository implements NotificationRepository {
       scheduled = scheduled.add(const Duration(days: 1));
     }
     return tz.TZDateTime.from(scheduled, tz.UTC);
+  }
+}
+
+class LocalPushNotificationRepository implements PushNotificationRepository {
+  @override
+  Future<void> registerDevice() async {}
+
+  @override
+  Future<void> unregisterDevice() async {}
+
+  @override
+  Stream<RemoteMessage> get foregroundMessages => const Stream.empty();
+
+  @override
+  Stream<RemoteMessage> get openedMessages => const Stream.empty();
+
+  @override
+  Future<RemoteMessage?> getInitialMessage() async => null;
+}
+
+/// Registers this device's FCM token under `fcmTokens/{uid}` (see
+/// `functions/index.js`'s `sendToUser`, which reads it) and keeps it
+/// current across a token refresh (FCM rotates tokens occasionally —
+/// app reinstall, data clear, or just periodically).
+class RemotePushNotificationRepository implements PushNotificationRepository {
+  RemotePushNotificationRepository({
+    FirebaseMessaging? messaging,
+    FirebaseFirestore? firestore,
+    FirebaseAuth? auth,
+  })  : _messaging = messaging ?? FirebaseMessaging.instance,
+        _firestore = firestore ?? FirebaseFirestore.instance,
+        _auth = auth ?? FirebaseAuth.instance;
+
+  final FirebaseMessaging _messaging;
+  final FirebaseFirestore _firestore;
+  final FirebaseAuth _auth;
+  StreamSubscription<String>? _refreshSubscription;
+
+  String get _uid {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) {
+      throw StateError('RemotePushNotificationRepository used without a signed-in Firebase user.');
+    }
+    return uid;
+  }
+
+  DocumentReference<Map<String, dynamic>> get _tokenDoc => _firestore.collection('fcmTokens').doc(_uid);
+
+  @override
+  Future<void> registerDevice() async {
+    final settings = await _messaging.requestPermission();
+    if (settings.authorizationStatus == AuthorizationStatus.denied) return;
+
+    final token = await _messaging.getToken();
+    if (token != null) await _saveToken(token);
+
+    unawaited(_refreshSubscription?.cancel());
+    _refreshSubscription = _messaging.onTokenRefresh.listen(_saveToken);
+  }
+
+  Future<void> _saveToken(String token) async {
+    await _tokenDoc.set({'token': token, 'updatedAt': DateTime.now().toIso8601String()});
+  }
+
+  @override
+  Future<void> unregisterDevice() async {
+    unawaited(_refreshSubscription?.cancel());
+    _refreshSubscription = null;
+    await _tokenDoc.delete();
+  }
+
+  @override
+  Stream<RemoteMessage> get foregroundMessages => FirebaseMessaging.onMessage;
+
+  @override
+  Stream<RemoteMessage> get openedMessages => FirebaseMessaging.onMessageOpenedApp;
+
+  @override
+  Future<RemoteMessage?> getInitialMessage() => _messaging.getInitialMessage();
+}
+
+/// Wraps the Google Mobile Ads SDK for the two ad flows that touch app
+/// state — rewarded video (grants coins on completion, via
+/// `AppController.watchRewardedAd`) and the periodic interstitial (via
+/// `AppController`'s action counter). Banner ads are purely presentational
+/// and load directly inside `BannerAdWidget`, since they never touch
+/// `AppController` state and don't need a fake for testing.
+///
+/// No Local/Remote split like most repositories here: ads work
+/// identically whether the user is signed in or not, so
+/// `RepositoryBundle` always wires the one real implementation below.
+abstract class AdRepository {
+  /// Loads and shows a rewarded ad, invoking [onReward] only if the user
+  /// watches it to completion. Resolves once the ad is dismissed
+  /// (rewarded or not) or fails to load; never throws — a failed load or
+  /// slow network just means [onReward] is never called.
+  Future<void> showRewardedAd({required VoidCallback onReward});
+
+  /// Loads and shows an interstitial (full-screen) ad. Resolves once
+  /// it's dismissed or fails to load; never throws — a failed load just
+  /// means nothing is shown, never blocking whatever action triggered it.
+  Future<void> showInterstitialAd();
+}
+
+class MobileAdsRepository implements AdRepository {
+  @override
+  Future<void> showRewardedAd({required VoidCallback onReward}) async {
+    final completer = Completer<void>();
+    await RewardedAd.load(
+      adUnitId: AdConfig.rewardedAdUnitId,
+      request: const AdRequest(),
+      rewardedAdLoadCallback: RewardedAdLoadCallback(
+        onAdLoaded: (ad) {
+          ad.fullScreenContentCallback = FullScreenContentCallback(
+            onAdDismissedFullScreenContent: (ad) {
+              ad.dispose();
+              if (!completer.isCompleted) completer.complete();
+            },
+            onAdFailedToShowFullScreenContent: (ad, error) {
+              ad.dispose();
+              if (!completer.isCompleted) completer.complete();
+            },
+          );
+          ad.show(onUserEarnedReward: (_, __) => onReward());
+        },
+        onAdFailedToLoad: (error) {
+          if (!completer.isCompleted) completer.complete();
+        },
+      ),
+    );
+    return completer.future;
+  }
+
+  @override
+  Future<void> showInterstitialAd() async {
+    final completer = Completer<void>();
+    await InterstitialAd.load(
+      adUnitId: AdConfig.interstitialAdUnitId,
+      request: const AdRequest(),
+      adLoadCallback: InterstitialAdLoadCallback(
+        onAdLoaded: (ad) {
+          ad.fullScreenContentCallback = FullScreenContentCallback(
+            onAdDismissedFullScreenContent: (ad) {
+              ad.dispose();
+              if (!completer.isCompleted) completer.complete();
+            },
+            onAdFailedToShowFullScreenContent: (ad, error) {
+              ad.dispose();
+              if (!completer.isCompleted) completer.complete();
+            },
+          );
+          ad.show();
+        },
+        onAdFailedToLoad: (error) {
+          if (!completer.isCompleted) completer.complete();
+        },
+      ),
+    );
+    return completer.future;
+  }
+}
+
+/// Google Play / App Store in-app purchases for the coin packages on
+/// `GetCoinsScreen`. One real implementation, no Local/Remote split —
+/// purchases work identically signed-in or not, same reasoning as
+/// `AdRepository` — but still behind an interface so
+/// `AppController.purchaseCoins` is unit-testable via a fake.
+abstract class PurchaseRepository {
+  /// Whether the store is reachable at all (signed into Play/App
+  /// Store, device supports IAP). False almost always means "hide the
+  /// buy buttons," not a transient error worth retrying immediately.
+  Future<bool> isAvailable();
+
+  /// Real store metadata (localized price, title) for whichever of
+  /// [productIds] actually exist as configured products — an ID with
+  /// no matching product (e.g. not yet created in Play Console) is
+  /// silently omitted from the result, not an error.
+  Future<List<ProductDetails>> queryProducts(Set<String> productIds);
+
+  /// Starts a real purchase flow for a consumable product. Resolves
+  /// once the flow is *launched*, not once it's done — the OS handles
+  /// the purchase sheet asynchronously, and the actual outcome arrives
+  /// later on [purchaseUpdates].
+  Future<void> buyConsumable(ProductDetails product);
+
+  /// Every purchase update this device sees — including ones left over
+  /// from a previous session that never got acknowledged. The app must
+  /// process every event here, not just ones from its own
+  /// `buyConsumable` calls, or a real purchase can succeed on the
+  /// store's side and never grant coins.
+  Stream<List<PurchaseDetails>> get purchaseUpdates;
+
+  /// Tells the store this purchase has been fully handled (coins
+  /// granted). Required — an un-acknowledged purchase gets refunded
+  /// automatically after a few days as "never delivered."
+  Future<void> completePurchase(PurchaseDetails purchase);
+}
+
+class InAppPurchaseRepository implements PurchaseRepository {
+  InAppPurchaseRepository({InAppPurchase? inAppPurchase}) : _iap = inAppPurchase ?? InAppPurchase.instance;
+
+  final InAppPurchase _iap;
+
+  @override
+  Future<bool> isAvailable() => _iap.isAvailable();
+
+  @override
+  Future<List<ProductDetails>> queryProducts(Set<String> productIds) async {
+    final response = await _iap.queryProductDetails(productIds);
+    return response.productDetails;
+  }
+
+  @override
+  Future<void> buyConsumable(ProductDetails product) {
+    return _iap.buyConsumable(purchaseParam: PurchaseParam(productDetails: product));
+  }
+
+  @override
+  Stream<List<PurchaseDetails>> get purchaseUpdates => _iap.purchaseStream;
+
+  @override
+  Future<void> completePurchase(PurchaseDetails purchase) {
+    if (!purchase.pendingCompletePurchase) return Future.value();
+    return _iap.completePurchase(purchase);
   }
 }
 
@@ -776,6 +1116,55 @@ class LocalPhotoVoteRepository implements PhotoVoteRepository {
   }
 }
 
+/// Offline/signed-out nuke attacks. A mock/seed target has no backend
+/// doc of its own to update, so this only ever persists this device's
+/// own sent-history — `AppController` mixes it into the mock target's
+/// displayed `nukeDamage`/`nukesSurvived`/`score` the same way it
+/// already mixes locally-stored ratings into a mock profile's
+/// `ratingSummary` (see `AppController._refreshProfileSummary`).
+class LocalNukeRepository implements NukeRepository {
+  static const _historyKey = 'nuke_events_sent';
+  final Uuid _uuid = const Uuid();
+
+  @override
+  Future<List<NukeEvent>> loadSentHistory() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_historyKey);
+    if (raw == null) return [];
+    try {
+      final list = jsonDecode(raw) as List;
+      return list.map((item) => NukeEvent.fromJson(Map<String, dynamic>.from(item))).toList();
+    } catch (_) {
+      await prefs.remove(_historyKey);
+      return [];
+    }
+  }
+
+  @override
+  Future<NukeEvent> attack({
+    required String attackerId,
+    required UserProfile target,
+    required String attribute,
+  }) async {
+    final event = NukeEvent(
+      id: _uuid.v4(),
+      attackerId: attackerId,
+      targetId: target.id,
+      targetName: target.displayName,
+      attribute: attribute,
+      damage: -NukeService.damagePerNuke,
+      createdAt: DateTime.now(),
+    );
+    final history = await loadSentHistory();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _historyKey,
+      jsonEncode([...history, event].map((e) => e.toJson()).toList()),
+    );
+    return event;
+  }
+}
+
 /// Firestore-backed ratings for a signed-in device. Individual rating
 /// documents are readable only by the rater who wrote them (enforced
 /// by security rules) — nobody, including the profile owner, can read
@@ -999,6 +1388,91 @@ class RemotePhotoVoteRepository implements PhotoVoteRepository {
       }
       transaction.set(voteRef, vote.toJson());
     });
+  }
+}
+
+/// Firestore-backed nuke attacks for a signed-in device. Writing the
+/// target's `nukeDamage`/`nukesSurvived`/`score` fields transactionally
+/// mirrors `RemotePhotoVoteRepository._upsertVoteAndCounts` exactly —
+/// see `firestore.rules`' `profiles/{uid}` update rule for the matching
+/// narrow non-owner write allowance. The event doc itself is only ever
+/// readable by the attacker (see `NukeEvent`'s doc comment / the
+/// `nukeEvents` rule) — the target's device never learns who attacked
+/// it, only that its own aggregate fields changed.
+class RemoteNukeRepository implements NukeRepository {
+  RemoteNukeRepository({FirebaseFirestore? firestore, FirebaseAuth? auth, LifeScoreService? scoreService})
+      : _firestore = firestore ?? FirebaseFirestore.instance,
+        _auth = auth ?? FirebaseAuth.instance,
+        _scoreService = scoreService ?? const LifeScoreService();
+
+  final FirebaseFirestore _firestore;
+  final FirebaseAuth _auth;
+  final LifeScoreService _scoreService;
+  final Uuid _uuid = const Uuid();
+
+  String get _uid {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) {
+      throw StateError('RemoteNukeRepository used without a signed-in Firebase user.');
+    }
+    return uid;
+  }
+
+  CollectionReference<Map<String, dynamic>> get _eventsCollection => _firestore.collection('nukeEvents');
+
+  DocumentReference<Map<String, dynamic>> _profileDoc(String id) => _firestore.collection('profiles').doc(id);
+
+  @override
+  Future<List<NukeEvent>> loadSentHistory() async {
+    final snapshot = await _eventsCollection.where('attackerId', isEqualTo: _uid).get();
+    return snapshot.docs.map((doc) => NukeEvent.fromJson(doc.data())).toList();
+  }
+
+  @override
+  Future<NukeEvent> attack({
+    required String attackerId,
+    required UserProfile target,
+    required String attribute,
+  }) async {
+    const damage = -NukeService.damagePerNuke;
+    final event = NukeEvent(
+      id: _uuid.v4(),
+      attackerId: attackerId,
+      targetId: target.id,
+      targetName: target.displayName,
+      attribute: attribute,
+      damage: damage,
+      createdAt: DateTime.now(),
+    );
+    final eventRef = _eventsCollection.doc(event.id);
+    final profileRef = _profileDoc(target.id);
+
+    await _firestore.runTransaction((transaction) async {
+      final profileSnapshot = await transaction.get(profileRef);
+
+      // No profile doc means the target is static seed/mock content —
+      // nothing real to update there (see `LocalNukeRepository`'s doc
+      // comment for how that case is handled instead).
+      if (profileSnapshot.exists) {
+        final data = profileSnapshot.data()!;
+        final currentDamage = Map<String, int>.from((data['nukeDamage'] as Map?) ?? const {});
+        final currentScore = LifeScore.fromJson(Map<String, dynamic>.from((data['score'] as Map?) ?? const {}));
+        final nukesSurvived = (data['nukesSurvived'] as int?) ?? 0;
+
+        const service = NukeService();
+        final updatedDamage = service.mergeDamage(currentDamage, attribute, damage);
+        final updatedScore = _scoreService.applyDelta(currentScore, attribute, damage);
+
+        transaction.update(profileRef, {
+          'nukeDamage': updatedDamage,
+          'nukesSurvived': nukesSurvived + 1,
+          'score': updatedScore.toJson(),
+        });
+      }
+      transaction.set(eventRef, event.toJson());
+    });
+
+    return event;
   }
 }
 
@@ -2249,7 +2723,11 @@ class RepositoryBundle {
     PhotoRepository? photoRepository,
     RatingRepository? ratingRepository,
     PhotoVoteRepository? photoVoteRepository,
+    NukeRepository? nukeRepository,
     NotificationRepository? notificationRepository,
+    PushNotificationRepository? pushNotificationRepository,
+    AdRepository? adRepository,
+    PurchaseRepository? purchaseRepository,
     SettingsRepository? settingsRepository,
     ProgressionRepository? progressionRepository,
     AppOpenRepository? appOpenRepository,
@@ -2267,6 +2745,7 @@ class RepositoryBundle {
     ProfileService? profileService,
     RatingService? ratingService,
     PhotoVoteService? photoVoteService,
+    NukeService? nukeService,
     MessageService? messageService,
     CallService? callService,
     PhotoService? photoService,
@@ -2288,7 +2767,11 @@ class RepositoryBundle {
         photoRepository = photoRepository ?? LocalPhotoRepository(),
         ratingRepository = ratingRepository ?? LocalRatingRepository(),
         photoVoteRepository = photoVoteRepository ?? LocalPhotoVoteRepository(),
+        nukeRepository = nukeRepository ?? LocalNukeRepository(),
         notificationRepository = notificationRepository ?? LocalNotificationRepository(),
+        pushNotificationRepository = pushNotificationRepository ?? LocalPushNotificationRepository(),
+        adRepository = adRepository ?? MobileAdsRepository(),
+        purchaseRepository = purchaseRepository ?? InAppPurchaseRepository(),
         settingsRepository = settingsRepository ?? LocalSettingsRepository(),
         progressionRepository = progressionRepository ?? LocalProgressionRepository(),
         appOpenRepository = appOpenRepository ?? LocalAppOpenRepository(),
@@ -2306,6 +2789,7 @@ class RepositoryBundle {
         profileService = profileService ?? ProfileService(),
         ratingService = ratingService ?? RatingService(),
         photoVoteService = photoVoteService ?? PhotoVoteService(),
+        nukeService = nukeService ?? const NukeService(),
         photoService = photoService ?? PhotoService(),
         progressionService = progressionService ?? const ProgressionService(),
         levelService = levelService ?? const LevelService(),
@@ -2328,7 +2812,11 @@ class RepositoryBundle {
   final PhotoRepository photoRepository;
   final RatingRepository ratingRepository;
   final PhotoVoteRepository photoVoteRepository;
+  final NukeRepository nukeRepository;
   final NotificationRepository notificationRepository;
+  final PushNotificationRepository pushNotificationRepository;
+  final AdRepository adRepository;
+  final PurchaseRepository purchaseRepository;
   final SettingsRepository settingsRepository;
   final ProgressionRepository progressionRepository;
   final AppOpenRepository appOpenRepository;
@@ -2346,6 +2834,7 @@ class RepositoryBundle {
   final ProfileService profileService;
   final RatingService ratingService;
   final PhotoVoteService photoVoteService;
+  final NukeService nukeService;
   final PhotoService photoService;
   final ProgressionService progressionService;
   final LevelService levelService;

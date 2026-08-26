@@ -13,12 +13,19 @@ import '../../data/models/models.dart';
 import '../../data/reference/world_data.dart';
 import '../../domain/scoring/life_score_service.dart';
 import '../../domain/services/achievement_service.dart';
+import '../../domain/services/advice_service.dart';
 import '../../domain/services/cosmetic_service.dart';
+import '../../domain/services/nuke_service.dart';
 import '../../domain/services/photo_quality_service.dart';
 import '../../domain/services/photo_service.dart';
 import '../state/app_state.dart';
+import '../widgets/ad_widgets.dart';
 import '../widgets/brand_widgets.dart';
+import '../widgets/fx_widgets.dart';
 import '../widgets/widgets.dart';
+import 'battle_screen.dart';
+import 'get_coins_screen.dart';
+import 'nuke_screen.dart';
 
 class SplashScreen extends StatelessWidget {
   const SplashScreen({super.key});
@@ -962,50 +969,89 @@ class HomeScreen extends ConsumerWidget {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text('YOUR LIFE',
-                    style: TextStyle(
-                        color: AppTheme.gold, fontWeight: FontWeight.w900)),
-              ),
-              CoinBalancePill(balance: state.wallet.balance),
-            ],
+          _StaggerIn(
+            delay: Duration.zero,
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text('YOUR LIFE',
+                      style: TextStyle(
+                          color: AppTheme.gold, fontWeight: FontWeight.w900)),
+                ),
+                WatchAdPill(
+                  onTap: () => Navigator.push(
+                      context, MaterialPageRoute(builder: (_) => GetCoinsScreen())),
+                ),
+                const SizedBox(width: 8),
+                CoinBalancePill(balance: state.wallet.balance),
+              ],
+            ),
           ),
           const SizedBox(height: 10),
-          Row(
-            children: [
-              ScoreTile(
-                  value: profile.score.overall.toString(),
-                  suffix: '/ 100',
-                  label: 'Life Score',
-                  color: AppTheme.accent),
-              const SizedBox(width: 10),
-              ScoreTile(
-                  value: profile.ratingSummary.averageLook.toStringAsFixed(1),
-                  suffix: '/ 5',
-                  label: 'Your Look',
-                  color: AppColors.pink),
-              const SizedBox(width: 10),
-              ScoreTile(
-                  value:
-                      profile.ratingSummary.averageOverall.toStringAsFixed(1),
-                  suffix: '/ 5',
-                  label: 'Your Life',
-                  color: AppTheme.gold),
-            ],
+          _StaggerIn(
+            delay: const Duration(milliseconds: 60),
+            child: Row(
+              children: [
+                ScoreTile(
+                    value: profile.score.overall.toString(),
+                    suffix: '/ 100',
+                    label: 'Life Score',
+                    color: AppTheme.accent),
+                const SizedBox(width: 10),
+                ScoreTile(
+                    value: profile.ratingSummary.averageLook.toStringAsFixed(1),
+                    suffix: '/ 5',
+                    label: 'Your Look',
+                    color: AppColors.pink),
+                const SizedBox(width: 10),
+                ScoreTile(
+                    value:
+                        profile.ratingSummary.averageOverall.toStringAsFixed(1),
+                    suffix: '/ 5',
+                    label: 'Your Life',
+                    color: AppTheme.gold),
+              ],
+            ),
           ),
           const SizedBox(height: 14),
-          LevelProgressCard(levelInfo: state.levelInfo),
+          _StaggerIn(
+            delay: const Duration(milliseconds: 120),
+            child: GradientButton(
+              label: 'Get Life Advice',
+              icon: Icons.tips_and_updates_rounded,
+              gradient: AppColors.blueGradient,
+              onPressed: () => _showAdvice(context, profile),
+            ),
+          ),
           const SizedBox(height: 14),
-          StreakCard(
-              streakDays: state.currentStreakDays,
-              lastSevenDays: state.lastSevenDays),
+          _StaggerIn(
+            delay: const Duration(milliseconds: 180),
+            child: NukeStatusBanner(
+              profile: profile,
+              balance: state.wallet.balance,
+              onCure: (attribute) => showCureRevealSheet(context, attribute),
+            ),
+          ),
+          const SizedBox(height: 14),
+          _StaggerIn(
+            delay: const Duration(milliseconds: 240),
+            child: LevelProgressCard(levelInfo: state.levelInfo),
+          ),
+          const SizedBox(height: 14),
+          _StaggerIn(
+            delay: const Duration(milliseconds: 300),
+            child: StreakCard(
+                streakDays: state.currentStreakDays,
+                lastSevenDays: state.lastSevenDays),
+          ),
           const SectionTitle('Daily Challenges'),
-          DailyChallengesCard(
-            challenges: state.todaysChallenges,
-            progressFor: state.challengeProgress,
-            claimedFor: state.isChallengeClaimedToday,
+          _StaggerIn(
+            delay: const Duration(milliseconds: 360),
+            child: DailyChallengesCard(
+              challenges: state.todaysChallenges,
+              progressFor: state.challengeProgress,
+              claimedFor: state.isChallengeClaimedToday,
+            ),
           ),
           const SizedBox(height: 6),
           // Rate/Discover/Leaderboard/Messages used to duplicate full-width
@@ -1015,144 +1061,185 @@ class HomeScreen extends ConsumerWidget {
           // labeled groups (play vs. discover more) rather than one flat
           // grab-bag grid — same four features, clearer grouping.
           const SectionTitle('Play'),
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            crossAxisSpacing: 10,
-            mainAxisSpacing: 10,
-            childAspectRatio: 0.95,
-            children: [
-              _ExploreTile(
-                icon: Icons.sports_martial_arts_rounded,
-                accent: AppColors.purple,
-                label: 'Life Battles',
-                onTap: () => Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const BattleScreen())),
-              ),
-              _ExploreTile(
-                icon: Icons.auto_fix_high_rounded,
-                accent: AppColors.green,
-                label: 'What If? Simulator',
-                onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => WhatIfScreen(original: profile))),
-              ),
-              _ExploreTile(
-                icon: Icons.help_rounded,
-                accent: AppColors.gold,
-                label: 'Would You Choose?',
-                onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const WhatWouldYouChooseScreen())),
-              ),
-            ],
+          _StaggerIn(
+            delay: const Duration(milliseconds: 420),
+            child: GridView.count(
+              crossAxisCount: 2,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+              childAspectRatio: 0.95,
+              children: [
+                _ExploreTile(
+                  icon: Icons.sports_martial_arts_rounded,
+                  accent: AppColors.purple,
+                  label: 'Life Battles',
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const BattleScreen())),
+                ),
+                _ExploreTile(
+                  icon: Icons.auto_fix_high_rounded,
+                  accent: AppColors.green,
+                  label: 'What If? Simulator',
+                  onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => WhatIfScreen(original: profile))),
+                ),
+                _ExploreTile(
+                  icon: Icons.help_rounded,
+                  accent: AppColors.gold,
+                  label: 'Would You Choose?',
+                  onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const WhatWouldYouChooseScreen())),
+                ),
+                _ExploreTile(
+                  emoji: '☢️',
+                  accent: AppColors.nukeOrange,
+                  label: "Nuke Someone's Life",
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const NukeScreen())),
+                ),
+              ],
+            ),
           ),
           const SectionTitle('Discover More'),
-          GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            crossAxisSpacing: 10,
-            mainAxisSpacing: 10,
-            childAspectRatio: 0.95,
-            children: [
-              _ExploreTile(
-                icon: Icons.compare_arrows_rounded,
-                accent: AppColors.neonRed,
-                label: 'Biggest Gaps',
-                onTap: () => Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (_) => const BiggestGapsScreen())),
-              ),
-              _ExploreTile(
-                icon: Icons.trending_up_rounded,
-                accent: AppColors.blue,
-                label: 'New & Rising',
-                onTap: () => Navigator.push(context,
-                    MaterialPageRoute(builder: (_) => const TrendingScreen())),
-              ),
-            ],
+          _StaggerIn(
+            delay: const Duration(milliseconds: 480),
+            child: GridView.count(
+              crossAxisCount: 2,
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              crossAxisSpacing: 10,
+              mainAxisSpacing: 10,
+              childAspectRatio: 0.95,
+              children: [
+                _ExploreTile(
+                  icon: Icons.compare_arrows_rounded,
+                  accent: AppColors.neonRed,
+                  label: 'Biggest Gaps',
+                  onTap: () => Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (_) => const BiggestGapsScreen())),
+                ),
+                _ExploreTile(
+                  icon: Icons.trending_up_rounded,
+                  accent: AppColors.blue,
+                  label: 'New & Rising',
+                  onTap: () => Navigator.push(context,
+                      MaterialPageRoute(builder: (_) => const TrendingScreen())),
+                ),
+              ],
+            ),
           ),
           const SectionTitle('Your Position'),
-          AppCard(
-            // Leaderboard dropped off the bottom nav (six tabs was one too
-            // many) — this comparison card is the natural place to lead
-            // into it instead, rather than losing it as a persistent tab.
-            onTap: () => Navigator.push(context,
-                MaterialPageRoute(builder: (_) => const LeaderboardScreen())),
-            child: Row(
-              children: [
-                const Icon(Icons.trending_up, color: AppTheme.accent),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Better than $percentile% of people like you',
-                    style: const TextStyle(
-                        fontSize: 22, fontWeight: FontWeight.w900),
+          _StaggerIn(
+            delay: const Duration(milliseconds: 540),
+            child: AppCard(
+              // Leaderboard dropped off the bottom nav (six tabs was one too
+              // many) — this comparison card is the natural place to lead
+              // into it instead, rather than losing it as a persistent tab.
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const LeaderboardScreen())),
+              child: Row(
+                children: [
+                  _PercentileRing(percentile: percentile),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('🏆 YOUR POSITION',
+                            style: AppTypography.eyebrow.copyWith(color: AppColors.gold)),
+                        const SizedBox(height: 2),
+                        // overallPercentile compares against every profile
+                        // this device currently knows about (mock seed +
+                        // real synced users) — not filtered by age/country
+                        // (those live in agePercentile/countryPercentile on
+                        // the Score screen), so "everyone" here is accurate
+                        // rather than implying a narrower "people like you"
+                        // comparison it isn't actually making.
+                        Text(
+                          "You're ahead of $percentile% of everyone here.",
+                          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                const Icon(Icons.chevron_right_rounded,
-                    color: AppTheme.textMuted),
-              ],
+                  const Icon(Icons.chevron_right_rounded,
+                      color: AppTheme.textMuted),
+                ],
+              ),
             ),
           ),
           const SectionTitle('Recent Activity'),
-          AppCard(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('Your rating increased',
-                    style: TextStyle(fontWeight: FontWeight.w900)),
-                const SizedBox(height: 8),
-                Text(
-                    '${(profile.ratingSummary.averageOverall - 0.1).clamp(0, 10).toStringAsFixed(1)} -> ${profile.ratingSummary.averageOverall.toStringAsFixed(1)}',
-                    style: const TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.w900,
-                        color: AppTheme.gold)),
-                const SizedBox(height: 4),
-                Text(
-                    '+${37 + profile.ratingSummary.count % 80} new ratings this week',
-                    style: const TextStyle(color: AppTheme.textMuted)),
-              ],
+          _StaggerIn(
+            delay: const Duration(milliseconds: 600),
+            child: AppCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Your rating increased',
+                      style: TextStyle(fontWeight: FontWeight.w900)),
+                  const SizedBox(height: 8),
+                  Text(
+                      '${(profile.ratingSummary.averageOverall - 0.1).clamp(0, 10).toStringAsFixed(1)} -> ${profile.ratingSummary.averageOverall.toStringAsFixed(1)}',
+                      style: const TextStyle(
+                          fontSize: 28,
+                          fontWeight: FontWeight.w900,
+                          color: AppTheme.gold)),
+                  const SizedBox(height: 4),
+                  Text(
+                      '+${37 + profile.ratingSummary.count % 80} new ratings this week',
+                      style: const TextStyle(color: AppTheme.textMuted)),
+                ],
+              ),
             ),
           ),
           const SectionTitle('People Are Saying'),
-          const Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              MetricPill(icon: Icons.work_outline, label: 'Great career'),
-              MetricPill(icon: Icons.flight_takeoff, label: 'Fun lifestyle'),
-              MetricPill(
-                  icon: Icons.savings_outlined,
-                  label: 'Money looks disciplined'),
-              MetricPill(icon: Icons.favorite_border, label: 'Balanced life'),
-            ],
-          ),
-          const SectionTitle('Keep Your Profile Fresh'),
-          AppCard(
-            child: Column(
+          const _StaggerIn(
+            delay: Duration(milliseconds: 660),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
               children: [
-                _ActionRow(
-                    icon: Icons.add_photo_alternate_outlined,
-                    label: 'Add another photo',
-                    onTap: () => _openPhotos(context)),
-                _ActionRow(
-                    icon: Icons.attach_money,
-                    label: 'Update income or savings',
-                    onTap: () => _edit(context, profile)),
-                _ActionRow(
-                    icon: Icons.emoji_events_outlined,
-                    label: 'Add a new achievement',
-                    onTap: () => _edit(context, profile)),
+                MetricPill(icon: Icons.work_outline, label: 'Great career'),
+                MetricPill(icon: Icons.flight_takeoff, label: 'Fun lifestyle'),
+                MetricPill(
+                    icon: Icons.savings_outlined,
+                    label: 'Money looks disciplined'),
+                MetricPill(icon: Icons.favorite_border, label: 'Balanced life'),
               ],
             ),
           ),
+          const SectionTitle('Keep Your Profile Fresh'),
+          _StaggerIn(
+            delay: const Duration(milliseconds: 720),
+            child: AppCard(
+              child: Column(
+                children: [
+                  _ActionRow(
+                      icon: Icons.add_photo_alternate_outlined,
+                      label: 'Add another photo',
+                      onTap: () => _openPhotos(context)),
+                  _ActionRow(
+                      icon: Icons.attach_money,
+                      label: 'Update income or savings',
+                      onTap: () => _edit(context, profile)),
+                  _ActionRow(
+                      icon: Icons.emoji_events_outlined,
+                      label: 'Add a new achievement',
+                      onTap: () => _edit(context, profile)),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 20),
+          const Center(child: BannerAdWidget()),
         ],
       ),
     );
@@ -1169,6 +1256,247 @@ class HomeScreen extends ConsumerWidget {
     Navigator.push(
         context, MaterialPageRoute(builder: (_) => const PhotoManagerScreen()));
   }
+
+  void _showAdvice(BuildContext context, UserProfile profile) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _LifeCoachSheet(profile: profile),
+    );
+  }
+}
+
+/// "✨ YOUR LIFE COACH" — the Get Life Advice bottom sheet. Each tap of
+/// "Give me different advice" re-rolls `LifeAdviceService.generate`
+/// (same weakest-categories-first selection, a fresh random variant per
+/// category) and re-plays the staggered card entrance so it reads as a
+/// genuine reshuffle, not a static list.
+class _LifeCoachSheet extends StatefulWidget {
+  const _LifeCoachSheet({required this.profile});
+
+  final UserProfile profile;
+
+  @override
+  State<_LifeCoachSheet> createState() => _LifeCoachSheetState();
+}
+
+class _LifeCoachSheetState extends State<_LifeCoachSheet> {
+  static const _service = LifeAdviceService();
+  static const _categoryIcons = {
+    'Career': Icons.work_rounded,
+    'Money': Icons.savings_rounded,
+    'Education': Icons.school_rounded,
+    'Independence': Icons.home_rounded,
+    'Social': Icons.groups_rounded,
+    'Lifestyle': Icons.local_fire_department_rounded,
+    'Wellbeing': Icons.self_improvement_rounded,
+  };
+
+  late List<AdviceTip> _tips = _service.generate(widget.profile);
+  int _shuffleCount = 0;
+
+  void _shuffle() {
+    HapticFeedback.selectionClick();
+    setState(() {
+      _tips = _service.generate(widget.profile);
+      _shuffleCount++;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 20, 20, 12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const NeonIconBadge(
+                    icon: Icons.auto_awesome_rounded, accent: AppColors.blue, circular: true),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('✨ YOUR LIFE COACH',
+                          style: AppTypography.eyebrow.copyWith(color: AppColors.blue)),
+                      const SizedBox(height: 2),
+                      Text("Here's what I'd focus on next...", style: AppTypography.heading),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 18),
+            for (var i = 0; i < _tips.length; i++)
+              _AdviceCard(
+                key: ValueKey('${_shuffleCount}_${_tips[i].category}_$i'),
+                tip: _tips[i],
+                icon: _categoryIcons[_tips[i].category] ?? Icons.tips_and_updates_rounded,
+                delay: Duration(milliseconds: 90 * i),
+              ),
+            const SizedBox(height: 6),
+            Center(
+              child: TextButton.icon(
+                onPressed: _shuffle,
+                icon: const Icon(Icons.refresh_rounded, color: AppColors.blue),
+                label: const Text('Give me different advice',
+                    style: TextStyle(color: AppColors.blue, fontWeight: FontWeight.w800)),
+              ),
+            ),
+            Text(
+              'Based on your real profile and background — not a measure of your worth, just ideas.',
+              style: AppTypography.caption,
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AdviceCard extends StatelessWidget {
+  const _AdviceCard({super.key, required this.tip, required this.icon, required this.delay});
+
+  final AdviceTip tip;
+  final IconData icon;
+  final Duration delay;
+
+  @override
+  Widget build(BuildContext context) {
+    return _StaggerIn(
+      delay: delay,
+      child: Padding(
+        padding: const EdgeInsets.only(bottom: 10),
+        child: AppCard(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              NeonIconBadge(icon: icon, accent: AppColors.blue, size: 40),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(tip.category,
+                              style: AppTypography.body.copyWith(fontWeight: FontWeight.w900)),
+                        ),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: AppColors.blue.withValues(alpha: 0.15),
+                            borderRadius: AppRadius.pillRadius,
+                          ),
+                          child: Text('${tip.score}',
+                              style: const TextStyle(
+                                  color: AppColors.blue, fontWeight: FontWeight.w800, fontSize: 12)),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(tip.tip, style: AppTypography.bodyMuted),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A one-shot fade+slide-up entrance, delayed by [delay] — the building
+/// block behind every staggered list in this screen (advice cards, Home
+/// section reveals). Deliberately a plain delayed `AnimatedOpacity`/
+/// `AnimatedSlide` rather than a driven `AnimationController`: finite,
+/// self-contained, and safe under `pumpAndSettle()` in tests.
+class _StaggerIn extends StatefulWidget {
+  const _StaggerIn({required this.delay, required this.child});
+
+  final Duration delay;
+  final Widget child;
+
+  @override
+  State<_StaggerIn> createState() => _StaggerInState();
+}
+
+class _StaggerInState extends State<_StaggerIn> {
+  bool _visible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    Future.delayed(widget.delay, () {
+      if (mounted) setState(() => _visible = true);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedSlide(
+      offset: _visible ? Offset.zero : const Offset(0, 0.08),
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+      child: AnimatedOpacity(
+        opacity: _visible ? 1 : 0,
+        duration: const Duration(milliseconds: 320),
+        curve: Curves.easeOutCubic,
+        child: widget.child,
+      ),
+    );
+  }
+}
+
+/// A compact circular progress ring around an animated percentile
+/// number — used by Home's "Your Position" card. `percentile` is
+/// already clamped 1-99 by `PercentileService`, so the ring never reads
+/// as literally empty or literally full.
+class _PercentileRing extends StatelessWidget {
+  const _PercentileRing({required this.percentile});
+
+  final int percentile;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: 60,
+      height: 60,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0, end: percentile / 100),
+            duration: const Duration(milliseconds: 900),
+            curve: Curves.easeOutCubic,
+            builder: (context, v, _) => SizedBox(
+              width: 60,
+              height: 60,
+              child: CircularProgressIndicator(
+                value: v,
+                strokeWidth: 5,
+                backgroundColor: AppColors.border,
+                valueColor: const AlwaysStoppedAnimation(AppColors.gold),
+              ),
+            ),
+          ),
+          AnimatedCountUp(
+            value: percentile.toDouble(),
+            suffix: '%',
+            duration: const Duration(milliseconds: 900),
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w900),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 /// A tappable tile for a secondary feature — used in Home's "Play"/
@@ -1177,12 +1505,17 @@ class HomeScreen extends ConsumerWidget {
 /// identity more directly than a flat square.
 class _ExploreTile extends StatelessWidget {
   const _ExploreTile(
-      {required this.icon,
+      {this.icon,
+      this.emoji,
       required this.accent,
       required this.label,
       required this.onTap});
 
-  final IconData icon;
+  final IconData? icon;
+
+  /// Overrides [icon] with a literal glyph (e.g. a radiation symbol) —
+  /// for a mark Material Icons simply doesn't have.
+  final String? emoji;
   final Color accent;
   final String label;
   final VoidCallback onTap;
@@ -1211,7 +1544,9 @@ class _ExploreTile extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(icon, color: accent, size: 60),
+                emoji != null
+                    ? Text(emoji!, style: const TextStyle(fontSize: 52))
+                    : Icon(icon, color: accent, size: 60),
                 const SizedBox(height: 12),
                 Text(
                   label,
@@ -1354,7 +1689,15 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
               ),
             )
           else ...[
-            for (final profile in profiles)
+            for (var i = 0; i < profiles.length; i++) ...[
+              // A banner every 5 cards, mirroring a typical feed's ad
+              // cadence — frequent enough to matter, not so frequent it
+              // buries the actual discovery content.
+              if (i > 0 && i % 5 == 0)
+                const Padding(
+                  padding: EdgeInsets.only(bottom: 20),
+                  child: Center(child: BannerAdWidget()),
+                ),
               Padding(
                 padding: const EdgeInsets.only(bottom: 40),
                 child: Stack(
@@ -1362,23 +1705,26 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
                   alignment: Alignment.bottomCenter,
                   children: [
                     _DiscoverCard(
-                        profile: profile,
-                        onTap: () => _openProfile(context, profile)),
+                        profile: profiles[i],
+                        nukesSurvived: state.nukesSurvivedFor(profiles[i]),
+                        onTap: () => _openProfile(context, profiles[i])),
                     Positioned(
                       bottom: -26,
                       child: _DiscoverActionBar(
                         canRewind: _dismissed.isNotEmpty,
                         onRewind: () => setState(() => _dismissed.removeLast()),
                         onPass: () =>
-                            setState(() => _dismissed.add(profile.id)),
-                        onViewProfile: () => _openProfile(context, profile),
-                        onLike: () => _quickRate(profile),
-                        onMessage: () => _messageProfile(context, profile),
+                            setState(() => _dismissed.add(profiles[i].id)),
+                        onViewProfile: () => _openProfile(context, profiles[i]),
+                        rating: profiles[i].ratingSummary,
+                        onLike: () => _quickRate(profiles[i]),
+                        onMessage: () => _messageProfile(context, profiles[i]),
                       ),
                     ),
                   ],
                 ),
               ),
+            ],
             if (state.discoverLoadingMore)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 24),
@@ -1390,15 +1736,20 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
     );
   }
 
-  Future<void> _quickRate(UserProfile profile) async {
-    await ref.read(appControllerProvider).submitRating(profile, 5, 5);
-    if (!mounted) return;
+  // Optimistic: dismiss the card and confirm instantly rather than
+  // waiting on the Firestore round-trip first — the "Pass" button next
+  // to this one is already instant (no network call at all), so a
+  // network-bound "Like" felt broken/laggy by comparison. The actual
+  // save still happens (and surfaces its own error toast via
+  // AppController if it ever fails), just not gating the UI on it.
+  void _quickRate(UserProfile profile) {
+    // Guards against a double-tap firing this twice for the same card
+    // before the first tap's setState/rebuild removes it — without
+    // this, two concurrent submitRating calls can race on the same
+    // Firestore rating document.
+    if (_dismissed.contains(profile.id)) return;
     setState(() => _dismissed.add(profile.id));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-          content: Text('Rated ${profile.displayName} 5/5.'),
-          duration: const Duration(seconds: 2)),
-    );
+    ref.read(appControllerProvider).submitRating(profile, 5, 5);
   }
 
   void _messageProfile(BuildContext context, UserProfile profile) {
@@ -1540,10 +1891,15 @@ class _DiscoverScreenState extends ConsumerState<DiscoverScreen> {
 /// A full-bleed profile card for the Discover feed: photo, bottom gradient
 /// overlay with name/age/facts, styled after modern swipe-card apps.
 class _DiscoverCard extends StatelessWidget {
-  const _DiscoverCard({required this.profile, required this.onTap});
+  const _DiscoverCard({
+    required this.profile,
+    required this.onTap,
+    this.nukesSurvived = 0,
+  });
 
   final UserProfile profile;
   final VoidCallback onTap;
+  final int nukesSurvived;
 
   @override
   Widget build(BuildContext context) {
@@ -1595,8 +1951,57 @@ class _DiscoverCard extends StatelessWidget {
                     decoration: BoxDecoration(
                         color: Colors.black.withValues(alpha: 0.5),
                         borderRadius: AppRadius.pillRadius),
-                    child: StarRating(
-                        value: profile.ratingSummary.averageOverall, size: 14),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.star_rounded,
+                            color: AppColors.gold, size: 15),
+                        const SizedBox(width: 4),
+                        Text(
+                          profile.ratingSummary.averageOverall
+                              .toStringAsFixed(1),
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                              fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              if (nukesSurvived > 0)
+                Positioned(
+                  top: 14,
+                  left: 14,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.5),
+                        borderRadius: AppRadius.pillRadius,
+                        border: Border.all(
+                            color: AppColors.nukeOrange, width: 1),
+                        boxShadow: [
+                          BoxShadow(
+                              color: AppColors.nukeOrange
+                                  .withValues(alpha: 0.55),
+                              blurRadius: 10,
+                              spreadRadius: 0.5),
+                        ]),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text('☢️', style: TextStyle(fontSize: 12)),
+                        const SizedBox(width: 4),
+                        Text(
+                          '$nukesSurvived survived',
+                          style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               Positioned(
@@ -1658,6 +2063,11 @@ class _DiscoverCard extends StatelessWidget {
                                 ? profile.carModel!
                                 : 'Owns a car',
                           ),
+                        if (nukesSurvived > 0)
+                          _CardFact(
+                            emoji: '☢️',
+                            label: '$nukesSurvived nuked',
+                          ),
                       ],
                     ),
                   ],
@@ -1672,9 +2082,14 @@ class _DiscoverCard extends StatelessWidget {
 }
 
 class _CardFact extends StatelessWidget {
-  const _CardFact({required this.icon, required this.label});
+  const _CardFact({this.icon, this.emoji, required this.label})
+      : assert(icon != null || emoji != null, '_CardFact needs either icon or emoji');
 
-  final IconData icon;
+  final IconData? icon;
+
+  /// Overrides [icon] with a literal glyph (e.g. a radiation symbol) —
+  /// for a mark Material Icons simply doesn't have.
+  final String? emoji;
   final String label;
 
   @override
@@ -1682,7 +2097,9 @@ class _CardFact extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(icon, size: 16, color: Colors.white70),
+        emoji != null
+            ? Text(emoji!, style: const TextStyle(fontSize: 14))
+            : Icon(icon, size: 16, color: Colors.white70),
         const SizedBox(width: 5),
         Text(
           label,
@@ -1704,6 +2121,7 @@ class _DiscoverActionBar extends StatelessWidget {
     required this.onRewind,
     required this.onPass,
     required this.onViewProfile,
+    required this.rating,
     required this.onLike,
     required this.onMessage,
   });
@@ -1712,6 +2130,11 @@ class _DiscoverActionBar extends StatelessWidget {
   final VoidCallback onRewind;
   final VoidCallback onPass;
   final VoidCallback onViewProfile;
+
+  /// Shown as a number on the middle button instead of a plain star
+  /// icon — a glanceable life rating right between Pass and Like,
+  /// same tap target/action (opens the full profile).
+  final RatingSummary rating;
   final VoidCallback onLike;
   final VoidCallback onMessage;
 
@@ -1736,8 +2159,9 @@ class _DiscoverActionBar extends StatelessWidget {
         const SizedBox(width: 10),
         _ActionButton(
             icon: Icons.star_rounded,
+            label: rating.hasRatings ? rating.averageOverall.toStringAsFixed(1) : null,
             color: AppColors.gold,
-            size: 46,
+            size: 68,
             onTap: onViewProfile,
             tooltip: 'View full profile'),
         const SizedBox(width: 10),
@@ -1762,6 +2186,7 @@ class _DiscoverActionBar extends StatelessWidget {
 class _ActionButton extends StatelessWidget {
   const _ActionButton({
     required this.icon,
+    this.label,
     required this.color,
     required this.size,
     required this.onTap,
@@ -1769,6 +2194,10 @@ class _ActionButton extends StatelessWidget {
   });
 
   final IconData icon;
+
+  /// Overrides [icon] with a short text label (e.g. a rating number)
+  /// while keeping the same circular button chrome.
+  final String? label;
   final Color color;
   final double size;
   final VoidCallback? onTap;
@@ -1794,8 +2223,18 @@ class _ActionButton extends StatelessWidget {
           child: SizedBox(
             width: size,
             height: size,
-            child: Icon(icon,
-                color: disabled ? AppTheme.border : color, size: size * 0.46),
+            child: label != null
+                ? Center(
+                    child: Text(
+                      label!,
+                      style: TextStyle(
+                          color: disabled ? AppTheme.border : color,
+                          fontWeight: FontWeight.w900,
+                          fontSize: size * 0.34),
+                    ),
+                  )
+                : Icon(icon,
+                    color: disabled ? AppTheme.border : color, size: size * 0.46),
           ),
         ),
       ),
@@ -1934,7 +2373,7 @@ class _PublicProfileScreenState extends ConsumerState<PublicProfileScreen> {
                   color: AppTheme.gold),
               const SizedBox(width: 10),
               ScoreTile(
-                  value: profile.score.overall.toString(),
+                  value: state.displayScoreFor(profile).overall.toString(),
                   suffix: '/ 100',
                   label: 'Life Score',
                   color: AppTheme.accent),
@@ -1947,6 +2386,20 @@ class _PublicProfileScreenState extends ConsumerState<PublicProfileScreen> {
             const SizedBox(height: 2),
             Text('${profile.viewCount} profile views',
                 style: const TextStyle(color: AppTheme.textMuted)),
+          ],
+          if (state.nukesSurvivedFor(profile) > 0) ...[
+            const SizedBox(height: 6),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('☢️', style: TextStyle(fontSize: 14)),
+                const SizedBox(width: 6),
+                Text('${state.nukesSurvivedFor(profile)} nukes survived',
+                    style: const TextStyle(
+                        color: AppColors.nukeOrange,
+                        fontWeight: FontWeight.w800)),
+              ],
+            ),
           ],
           if (!mine &&
               !state.blockedIds.contains(profile.id) &&
@@ -1978,7 +2431,7 @@ class _PublicProfileScreenState extends ConsumerState<PublicProfileScreen> {
           const SectionTitle('Life'),
           _lifeFacts(profile),
           const SectionTitle('Score Breakdown'),
-          _breakdown(profile),
+          _breakdown(state, profile),
           _commentsSection(context, ref, state, profile, limit: 5),
           if (!mine && profile.privacy.allowRatings) ...[
             const SectionTitle('Rate This Life'),
@@ -2081,11 +2534,21 @@ class _PublicProfileScreenState extends ConsumerState<PublicProfileScreen> {
     );
   }
 
-  Widget _breakdown(UserProfile profile) {
+  Widget _breakdown(AppController state, UserProfile profile) {
+    final damage = state.nukeDamageFor(profile);
+    // `LifeScore.breakdown`'s labels ('Career', 'Money', ...) match
+    // `NukeService.attributeLabels`' values exactly — reverse-lookup to
+    // flag which breakdown row a nuke actually hit.
+    final damagedLabels = damage.entries
+        .where((entry) => entry.value < 0)
+        .map((entry) => NukeService.attributeLabels[entry.key])
+        .whereType<String>()
+        .toSet();
+
     return AppCard(
       child: Column(
         children: [
-          for (final entry in profile.score.breakdown.entries)
+          for (final entry in state.displayScoreFor(profile).breakdown.entries)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 7),
               child: Row(
@@ -2096,11 +2559,33 @@ class _PublicProfileScreenState extends ConsumerState<PublicProfileScreen> {
                   SizedBox(
                     width: 120,
                     child: LinearProgressIndicator(
-                        value: entry.value / 100, minHeight: 8),
+                        value: entry.value / 100,
+                        minHeight: 8,
+                        color: damagedLabels.contains(entry.key)
+                            ? AppColors.danger
+                            : null),
                   ),
                   const SizedBox(width: 10),
-                  Text('${entry.value}',
-                      style: const TextStyle(fontWeight: FontWeight.w900)),
+                  SizedBox(
+                    width: 28,
+                    child: Text('${entry.value}',
+                        textAlign: TextAlign.right,
+                        style: const TextStyle(fontWeight: FontWeight.w900)),
+                  ),
+                  // Always-reserved slot (present or not) so a damaged
+                  // row's marker never steals width from the label
+                  // column and shifts that row's progress bar left —
+                  // every row must lay out identically regardless of
+                  // damage state.
+                  SizedBox(
+                    width: 20,
+                    child: damagedLabels.contains(entry.key)
+                        ? const Padding(
+                            padding: EdgeInsets.only(left: 4),
+                            child: Text('☢️', style: TextStyle(fontSize: 12)),
+                          )
+                        : null,
+                  ),
                 ],
               ),
             ),
@@ -2390,15 +2875,17 @@ String authorNameFor(AppController state, String authorId) {
     return state.currentProfile!.displayName;
   }
   for (final profile in state.profiles) {
-    if (profile.id == authorId)
+    if (profile.id == authorId) {
       return profile.displayName.isEmpty ? 'Anonymous' : profile.displayName;
+    }
   }
   return 'Anonymous';
 }
 
 ProfilePhoto? authorPhotoFor(AppController state, String authorId) {
-  if (authorId == state.currentUserId)
+  if (authorId == state.currentUserId) {
     return state.currentProfile?.profilePhoto;
+  }
   for (final profile in state.profiles) {
     if (profile.id == authorId) return profile.profilePhoto;
   }
@@ -2548,6 +3035,13 @@ class ConversationScreen extends ConsumerStatefulWidget {
 }
 
 class _ConversationScreenState extends ConsumerState<ConversationScreen> {
+  final ScrollController _scrollController = ScrollController();
+
+  /// Last thread length this screen scrolled for — lets `build` detect
+  /// "the thread just changed" (opened, sent, or a live message just
+  /// arrived) without re-jumping on every unrelated rebuild.
+  int _lastMessageCount = -1;
+
   @override
   void initState() {
     super.initState();
@@ -2559,6 +3053,37 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
   }
 
   @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  // The list previously had no ScrollController at all, so it opened
+  // wherever ListView's default layout happened to land instead of the
+  // newest message — the user had to scroll down manually every time.
+  // Jumps rather than animates: opening a long thread should land on
+  // the latest message instantly, not visibly scroll through every
+  // message on the way down.
+  void _scrollToBottomIfNeeded(int messageCount) {
+    if (messageCount == _lastMessageCount) return;
+    _lastMessageCount = messageCount;
+    // Two frames, not one: the mark-as-read side effect a couple of
+    // lines below schedules its own postFrameCallback for this same
+    // build, and its resulting notifyListeners() lands a frame later —
+    // by then the thread's own read-receipt UI may have nudged layout
+    // just enough that a single jump already falls slightly short.
+    _jumpToBottom(remainingFrames: 2);
+  }
+
+  void _jumpToBottom({required int remainingFrames}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+      if (remainingFrames > 1) _jumpToBottom(remainingFrames: remainingFrames - 1);
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
     final otherProfile = state.profileById(widget.otherUserId);
@@ -2566,16 +3091,18 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
         ? otherProfile!.displayName
         : 'Anonymous';
     final thread = state.conversationWith(widget.otherUserId);
+    _scrollToBottomIfNeeded(thread.length);
     // Not just an initState one-shot — a message that arrives live
     // while this screen is already open (the other side is mid-chat,
     // not just opening the thread) needs to get marked read too, or
     // it's still "unread" the moment you navigate away.
     if (thread.any((m) => m.recipientId == state.currentUserId && !m.isRead)) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted)
+        if (mounted) {
           ref
               .read(appControllerProvider)
               .markConversationRead(widget.otherUserId);
+        }
       });
     }
     final canReply = otherProfile != null &&
@@ -2667,6 +3194,7 @@ class _ConversationScreenState extends ConsumerState<ConversationScreen> {
                   subtitle: 'Say hello.'),
             )
           : ListView(
+              controller: _scrollController,
               padding: const EdgeInsets.all(20),
               children: [
                 for (final message in thread)
@@ -2815,8 +3343,9 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     if (active && !_wasActive) {
       _activeElapsed = Duration.zero;
       _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted)
+        if (mounted) {
           setState(() => _activeElapsed += const Duration(seconds: 1));
+        }
       });
     } else if (!active && _wasActive) {
       _ticker?.cancel();
@@ -3829,96 +4358,146 @@ class BiggestGapsScreen extends ConsumerWidget {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          const AppCard(
-            child: Text(
-                'Where the AI algorithm and the community disagree the most. Both are real — they just don\'t always see eye to eye.'),
+          ShaderMask(
+            shaderCallback: (bounds) => AppColors.neonRedGradient.createShader(bounds),
+            child: Text('🔥 BIGGEST GAPS',
+                style: AppTypography.hero.copyWith(fontSize: 30, color: Colors.white)),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 4),
+          Text('When the algorithm and people see life differently...', style: AppTypography.bodyMuted),
+          const SizedBox(height: 6),
+          Text(
+            'These profiles have the biggest gap between their calculated Life Score and community ratings — neither one is objectively "correct".',
+            style: AppTypography.caption,
+          ),
+          const SizedBox(height: 16),
           if (profiles.isEmpty)
             const EmptyState(
               icon: Icons.compare_arrows_rounded,
-              title: 'No gaps yet.',
+              title: '👀 Not enough data yet',
               subtitle:
-                  'Profiles need a few community ratings before a gap can be measured.',
+                  'We need more community ratings before the biggest gaps can appear.',
             )
           else
-            for (final profile in profiles)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: AppCard(
-                  onTap: () => Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                          builder: (_) =>
-                              PublicProfileScreen(profileId: profile.id))),
-                  child: Row(
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(28),
-                        child: ProfileFrame(
-                          frameId: profile.equippedFrameId,
-                          borderRadius: 28,
-                          child: ProfileImage(
-                            photo: profile.privacy.showPhotos
-                                ? profile.profilePhoto
-                                : null,
-                            label: profile.displayName,
-                            height: 56,
-                            width: 56,
-                            borderRadius: 28,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 12),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              profile.displayName.isEmpty
-                                  ? 'Anonymous'
-                                  : profile.displayName,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: AppTypography.body
-                                  .copyWith(fontWeight: FontWeight.w800),
-                            ),
-                            const SizedBox(height: 6),
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                _ScoreChip(
-                                    label: 'AI',
-                                    value: profile.score.overall,
-                                    color: AppTheme.accent),
-                                const SizedBox(width: 6),
-                                _ScoreChip(
-                                    label: 'People',
-                                    value: state.communityScoreOf(
-                                        profile.ratingSummary),
-                                    color: AppColors.gold),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 7),
-                        decoration: BoxDecoration(
-                            gradient: AppColors.purpleGradient,
-                            borderRadius: AppRadius.pillRadius),
-                        child: Text('${state.gapFor(profile)}',
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w900,
-                                color: Colors.white)),
-                      ),
-                    ],
+            for (var i = 0; i < profiles.length; i++)
+              _StaggerIn(
+                delay: Duration(milliseconds: 60 * i.clamp(0, 8)),
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: _GapCard(
+                    profile: profiles[i],
+                    algorithmScore: profiles[i].score.overall,
+                    communityScore: state.communityScoreOf(profiles[i].ratingSummary),
+                    gap: state.gapFor(profiles[i]) ?? 0,
+                    onTap: () => Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                            builder: (_) => PublicProfileScreen(profileId: profiles[i].id))),
                   ),
                 ),
               ),
         ],
       ),
+    );
+  }
+}
+
+class _GapCard extends StatelessWidget {
+  const _GapCard({
+    required this.profile,
+    required this.algorithmScore,
+    required this.communityScore,
+    required this.gap,
+    required this.onTap,
+  });
+
+  final UserProfile profile;
+  final int algorithmScore;
+  final int communityScore;
+  final int gap;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return AppCard(
+      onTap: onTap,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(24),
+                child: ProfileFrame(
+                  frameId: profile.equippedFrameId,
+                  borderRadius: 24,
+                  child: ProfileImage(
+                    photo: profile.privacy.showPhotos ? profile.profilePhoto : null,
+                    label: profile.displayName,
+                    height: 48,
+                    width: 48,
+                    borderRadius: 24,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  profile.displayName.isEmpty ? 'Anonymous' : profile.displayName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: AppTypography.body.copyWith(fontWeight: FontWeight.w800),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                    gradient: AppColors.purpleGradient, borderRadius: AppRadius.pillRadius),
+                child: Text('+$gap',
+                    style: const TextStyle(fontWeight: FontWeight.w900, color: Colors.white)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          _gapBar('Algorithm', algorithmScore, AppTheme.accent),
+          const SizedBox(height: 6),
+          _gapBar('Community', communityScore, AppColors.gold),
+        ],
+      ),
+    );
+  }
+
+  Widget _gapBar(String label, int value, Color color) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 70,
+          child: Text(label, style: AppTypography.caption.copyWith(color: AppTheme.textMuted)),
+        ),
+        Expanded(
+          child: TweenAnimationBuilder<double>(
+            tween: Tween(begin: 0, end: value / 100),
+            duration: const Duration(milliseconds: 700),
+            curve: Curves.easeOutCubic,
+            builder: (context, v, _) => ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(
+                value: v,
+                minHeight: 10,
+                backgroundColor: AppColors.border,
+                valueColor: AlwaysStoppedAnimation(color),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 28,
+          child: Text('$value',
+              textAlign: TextAlign.right,
+              style: AppTypography.body.copyWith(fontWeight: FontWeight.w900, color: color)),
+        ),
+      ],
     );
   }
 }
@@ -3944,21 +4523,31 @@ class TrendingScreen extends ConsumerWidget {
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          const AppCard(
-            child: Text(
-                'Newer profiles already earning real views and ratings — not a fake live feed, just genuinely recent activity.'),
+          ShaderMask(
+            shaderCallback: (bounds) => AppColors.blueGradient.createShader(bounds),
+            child: Text('🚀 NEW & RISING',
+                style: AppTypography.hero.copyWith(fontSize: 30, color: Colors.white)),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 4),
+          Text('Fresh profiles getting attention.', style: AppTypography.bodyMuted),
+          const SizedBox(height: 6),
+          Text(
+            'Newer profiles already earning real views and ratings — not a fake live feed, just genuinely recent activity.',
+            style: AppTypography.caption,
+          ),
+          const SizedBox(height: 16),
           if (profiles.isEmpty)
             const EmptyState(
               icon: Icons.trending_up_rounded,
-              title: 'Nothing trending yet.',
+              title: '🚀 Nothing rising yet',
               subtitle:
                   'New public profiles that pick up views or ratings will show up here.',
             )
           else
             for (var i = 0; i < profiles.length; i++)
-              Padding(
+              _StaggerIn(
+                delay: Duration(milliseconds: 60 * i.clamp(0, 8)),
+                child: Padding(
                 padding: const EdgeInsets.only(bottom: 10),
                 child: AppCard(
                   onTap: () => Navigator.push(
@@ -4004,6 +4593,21 @@ class TrendingScreen extends ConsumerWidget {
                                         .copyWith(fontWeight: FontWeight.w800),
                                   ),
                                 ),
+                                if (i < 3) ...[
+                                  const SizedBox(width: 6),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 6, vertical: 2),
+                                    decoration: BoxDecoration(
+                                        color: AppColors.gold.withValues(alpha: 0.18),
+                                        borderRadius: AppRadius.pillRadius),
+                                    child: const Text('🔥 RISING',
+                                        style: TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w900,
+                                            color: AppColors.gold)),
+                                  ),
+                                ],
                                 if (DateTime.now()
                                         .difference(profiles[i].createdAt)
                                         .inDays <
@@ -4016,7 +4620,7 @@ class TrendingScreen extends ConsumerWidget {
                                         color: AppColors.green
                                             .withValues(alpha: 0.18),
                                         borderRadius: AppRadius.pillRadius),
-                                    child: const Text('NEW',
+                                    child: const Text('✨ NEW',
                                         style: TextStyle(
                                             fontSize: 10,
                                             fontWeight: FontWeight.w900,
@@ -4032,7 +4636,7 @@ class TrendingScreen extends ConsumerWidget {
                                 const Icon(Icons.visibility_outlined,
                                     size: 13, color: AppTheme.textMuted),
                                 const SizedBox(width: 3),
-                                Text('${profiles[i].viewCount}',
+                                Text('${profiles[i].viewCount} views',
                                     style: const TextStyle(
                                         color: AppTheme.textMuted,
                                         fontSize: 12.5)),
@@ -4040,7 +4644,7 @@ class TrendingScreen extends ConsumerWidget {
                                 const Icon(Icons.star_rounded,
                                     size: 13, color: AppTheme.textMuted),
                                 const SizedBox(width: 3),
-                                Text('${profiles[i].ratingSummary.count}',
+                                Text('${profiles[i].ratingSummary.count} ratings',
                                     style: const TextStyle(
                                         color: AppTheme.textMuted,
                                         fontSize: 12.5)),
@@ -4053,31 +4657,8 @@ class TrendingScreen extends ConsumerWidget {
                   ),
                 ),
               ),
+              ),
         ],
-      ),
-    );
-  }
-}
-
-class _ScoreChip extends StatelessWidget {
-  const _ScoreChip(
-      {required this.label, required this.value, required this.color});
-
-  final String label;
-  final int value;
-  final Color color;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.16),
-          borderRadius: AppRadius.pillRadius),
-      child: Text(
-        '$label $value',
-        style:
-            TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: color),
       ),
     );
   }
@@ -4139,6 +4720,12 @@ class MeScreen extends ConsumerWidget {
           Align(
               alignment: Alignment.centerRight,
               child: CoinBalancePill(balance: state.wallet.balance)),
+          const SizedBox(height: 10),
+          NukeStatusBanner(
+            profile: profile,
+            balance: state.wallet.balance,
+            onCure: (attribute) => showCureRevealSheet(context, attribute),
+          ),
           const SizedBox(height: 10),
           LevelProgressCard(levelInfo: state.levelInfo),
           const SizedBox(height: 14),
@@ -4501,25 +5088,53 @@ class _WhatIfScreenState extends State<WhatIfScreen> {
         happiness = widget.original.happiness;
       });
 
+  bool get _hasChanges =>
+      country != widget.original.country ||
+      employment != widget.original.employmentStatus ||
+      income != widget.original.monthlyIncome ||
+      savings != widget.original.savings ||
+      living != widget.original.livingSituation ||
+      exercise != widget.original.exerciseFrequency ||
+      friends != widget.original.closeFriends ||
+      happiness != widget.original.happiness;
+
   @override
   Widget build(BuildContext context) {
     final before = widget.original.score;
     final after = _simulated;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('What If?'),
-        actions: [TextButton(onPressed: _reset, child: const Text('RESET'))],
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(20),
-        children: [
-          const AppCard(
-            child: Text(
-                'Adjust a few things and see how your Life Score might move. Nothing here is saved to your real profile.'),
-          ),
-          const SizedBox(height: 14),
-          _WhatIfOverallCard(before: before.overall, after: after.overall),
-          const SizedBox(height: 10),
+    return PopScope(
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop || !_hasChanges) return;
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text("Your simulation wasn't saved. Your real profile remains unchanged."),
+        ));
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('🔮 What If?'),
+          actions: [
+            TextButton.icon(
+              onPressed: _reset,
+              icon: const Icon(Icons.refresh_rounded, size: 18),
+              label: const Text('RESET'),
+            ),
+          ],
+        ),
+        body: ListView(
+          padding: const EdgeInsets.all(20),
+          children: [
+            Text(
+              'What would your life score look like if you changed one thing?',
+              style: AppTypography.bodyMuted,
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Nothing here is saved to your real profile — pure exploration.',
+              style: AppTypography.caption,
+            ),
+            const SizedBox(height: 14),
+            _WhatIfOverallCard(before: before.overall, after: after.overall),
+            const SizedBox(height: 10),
           AppCard(
             child: Column(
               children: [
@@ -4531,93 +5146,152 @@ class _WhatIfScreenState extends State<WhatIfScreen> {
               ],
             ),
           ),
-          const SectionTitle('Country'),
-          _choiceRow(country, LifeScoreService.benchmarks.keys.toList(),
-              (v) => setState(() => country = v)),
-          const SectionTitle('Employment'),
-          _choiceRow(
-              employment,
-              const [
-                'Employed',
-                'Freelancer',
-                'Founder',
-                'Student',
-                'Unemployed'
-              ],
-              (v) => setState(() => employment = v)),
-          const SectionTitle('Living situation'),
-          _choiceRow(
-              living,
-              const [
-                'With family',
-                'Rents apartment',
-                'Owns home',
-                'Shared place'
-              ],
-              (v) => setState(() => living = v)),
-          const SectionTitle('Exercise frequency'),
-          _choiceRow(exercise, const ['Rarely', 'Sometimes', 'Weekly', 'Daily'],
-              (v) => setState(() => exercise = v)),
-          _moneyField(
-              'Monthly income', income, (v) => setState(() => income = v)),
-          _moneyField('Savings', savings, (v) => setState(() => savings = v)),
-          _numberSlider('Close friends', friends.toDouble(), 0, 12,
-              (v) => setState(() => friends = v.round())),
-          _numberSlider('Happiness', happiness.toDouble(), 1, 10,
-              (v) => setState(() => happiness = v.round())),
-        ],
+          _LeverCard(
+            icon: Icons.public_rounded,
+            title: 'Country',
+            child: _choiceRow(country, LifeScoreService.benchmarks.keys.toList(),
+                (v) => setState(() => country = v)),
+          ),
+          _LeverCard(
+            icon: Icons.work_rounded,
+            title: 'Employment',
+            child: _choiceRow(
+                employment,
+                const [
+                  'Employed',
+                  'Freelancer',
+                  'Founder',
+                  'Student',
+                  'Unemployed'
+                ],
+                (v) => setState(() => employment = v)),
+          ),
+          _LeverCard(
+            icon: Icons.home_rounded,
+            title: 'Living situation',
+            child: _choiceRow(
+                living,
+                const [
+                  'With family',
+                  'Rents apartment',
+                  'Owns home',
+                  'Shared place'
+                ],
+                (v) => setState(() => living = v)),
+          ),
+          _LeverCard(
+            icon: Icons.fitness_center_rounded,
+            title: 'Exercise frequency',
+            child: _choiceRow(exercise, const ['Rarely', 'Sometimes', 'Weekly', 'Daily'],
+                (v) => setState(() => exercise = v)),
+          ),
+          _LeverCard(
+            icon: Icons.attach_money_rounded,
+            title: 'Monthly income',
+            child: _moneyField(income, (v) => setState(() => income = v)),
+          ),
+          _LeverCard(
+            icon: Icons.savings_rounded,
+            title: 'Savings',
+            child: _moneyField(savings, (v) => setState(() => savings = v)),
+          ),
+          _LeverCard(
+            icon: Icons.groups_rounded,
+            title: 'Close friends: ${friends.round()}',
+            child: _numberSlider(friends.toDouble(), 0, 12,
+                (v) => setState(() => friends = v.round())),
+          ),
+          _LeverCard(
+            icon: Icons.sentiment_satisfied_alt_rounded,
+            title: 'Happiness: ${happiness.round()}',
+            child: _numberSlider(happiness.toDouble(), 1, 10,
+                (v) => setState(() => happiness = v.round())),
+          ),
+          ],
+        ),
       ),
     );
   }
 
   Widget _choiceRow(
       String value, List<String> options, ValueChanged<String> onChanged) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: [
+        for (final option in options)
+          ChoiceChip(
+              label: Text(option),
+              selected: value == option,
+              onSelected: (_) => onChanged(option)),
+      ],
+    );
+  }
+
+  Widget _moneyField(double value, ValueChanged<double> onChanged) {
+    return TextFormField(
+      key: ValueKey('money-${value.round()}'),
+      initialValue: value.round().toString(),
+      keyboardType: TextInputType.number,
+      decoration: InputDecoration(
+        labelText: widget.original.currency,
+        isDense: true,
+      ),
+      onChanged: (next) => onChanged(double.tryParse(next) ?? 0),
+    );
+  }
+
+  Widget _numberSlider(
+      double value, double min, double max, ValueChanged<double> onChanged) {
+    return Slider(
+      value: value.clamp(min, max),
+      min: min,
+      max: max,
+      divisions: (max - min).round(),
+      label: value.round().toString(),
+      onChanged: onChanged,
+    );
+  }
+}
+
+/// A bordered "lever" card wrapping one What-If control — an icon +
+/// label header over the actual chip row/slider/field, so the levers
+/// read as a set of distinct dials rather than a flat settings list.
+/// Purple throughout (this app's "player/exploration energy" accent,
+/// per the same color-semantics this pass applied to Life Battles/Nuke)
+/// — deliberately not colored per-lever, since these controls don't
+/// individually carry a good/bad meaning the way a score delta does.
+class _LeverCard extends StatelessWidget {
+  const _LeverCard({required this.icon, required this.title, required this.child});
+
+  final IconData icon;
+  final String title;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceHigh,
+        borderRadius: AppRadius.mdRadius,
+        border: Border.all(color: AppColors.purple.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          for (final option in options)
-            ChoiceChip(
-                label: Text(option),
-                selected: value == option,
-                onSelected: (_) => onChanged(option)),
+          Row(
+            children: [
+              Icon(icon, color: AppColors.purple, size: 18),
+              const SizedBox(width: 8),
+              Text(title, style: AppTypography.body.copyWith(fontWeight: FontWeight.w800)),
+            ],
+          ),
+          const SizedBox(height: 10),
+          child,
         ],
       ),
-    );
-  }
-
-  Widget _moneyField(
-      String label, double value, ValueChanged<double> onChanged) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
-      child: TextFormField(
-        key: ValueKey('$label-${value.round()}'),
-        initialValue: value.round().toString(),
-        keyboardType: TextInputType.number,
-        decoration:
-            InputDecoration(labelText: '$label (${widget.original.currency})'),
-        onChanged: (next) => onChanged(double.tryParse(next) ?? 0),
-      ),
-    );
-  }
-
-  Widget _numberSlider(String label, double value, double min, double max,
-      ValueChanged<double> onChanged) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SectionTitle('$label: ${value.round()}'),
-        Slider(
-          value: value.clamp(min, max),
-          min: min,
-          max: max,
-          divisions: (max - min).round(),
-          label: value.round().toString(),
-          onChanged: onChanged,
-        ),
-      ],
     );
   }
 }
@@ -4632,9 +5306,19 @@ class _WhatIfOverallCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final delta = after - before;
     final color = delta > 0
-        ? AppColors.gold
+        ? AppColors.green
         : (delta < 0 ? AppColors.danger : AppTheme.textMuted);
-    return AppCard(
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 320),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceHigh,
+        borderRadius: AppRadius.lgRadius,
+        border: Border.all(color: delta == 0 ? AppColors.border : color.withValues(alpha: 0.6)),
+        boxShadow: delta == 0
+            ? null
+            : [BoxShadow(color: color.withValues(alpha: 0.3), blurRadius: 18, spreadRadius: 1)],
+      ),
+      padding: const EdgeInsets.all(16),
       child: Row(
         children: [
           Expanded(
@@ -4663,13 +5347,25 @@ class _WhatIfOverallCard extends StatelessWidget {
                 Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      '$after',
-                      key: const Key('whatIfAfterOverall'),
-                      style: TextStyle(
-                          fontSize: 32,
-                          fontWeight: FontWeight.w900,
-                          color: color),
+                    Stack(
+                      clipBehavior: Clip.none,
+                      alignment: Alignment.center,
+                      children: [
+                        if (delta != 0)
+                          BurstFx(
+                            key: ValueKey('whatIfBurst-$after'),
+                            colors: [color],
+                            particleCount: 10,
+                            radius: 30,
+                            duration: const Duration(milliseconds: 500),
+                          ),
+                        AnimatedCountUp(
+                          value: after.toDouble(),
+                          textKey: const Key('whatIfAfterOverall'),
+                          style: TextStyle(
+                              fontSize: 32, fontWeight: FontWeight.w900, color: color),
+                        ),
+                      ],
                     ),
                     const SizedBox(width: 6),
                     Text(
@@ -5280,6 +5976,24 @@ class PrivacySettingsScreen extends ConsumerWidget {
               'Show Photos',
               'Hide all gallery photos on public profile.',
               (value) => privacy.copyWith(showPhotos: value)),
+          const SectionTitle('Data & Ads'),
+          const AppCard(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline_rounded, color: AppTheme.textMuted),
+                SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'This app shows ads to stay free. Unlike everything else here, '
+                    "ads use a device advertising ID for targeting — it isn't linked "
+                    'to your anonymous profile or any of the data above.',
+                    style: TextStyle(color: AppTheme.textMuted),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ],
       ),
     );
@@ -5464,358 +6178,34 @@ class _CosmeticFrameCard extends StatelessWidget {
   }
 }
 
-/// Judge a Life Battle: two eligible profiles, side by side, with real
-/// per-category `LifeScore` data. The "audience split" shown after
-/// voting is a deterministic estimate (see `BattleService`), never a
-/// live vote tally — this MVP has no other real voters to tally.
-class BattleScreen extends ConsumerStatefulWidget {
-  const BattleScreen({super.key});
-
-  @override
-  ConsumerState<BattleScreen> createState() => _BattleScreenState();
-}
-
-class _BattleScreenState extends ConsumerState<BattleScreen> {
-  Battle? _battle;
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _loadPending());
-  }
-
-  Future<void> _loadPending() async {
-    final battle = await ref.read(appControllerProvider).ensureBattle();
-    if (!mounted) return;
-    setState(() {
-      _battle = battle;
-      _loading = false;
-    });
-  }
-
-  Future<void> _next({BattleType type = BattleType.random}) async {
-    setState(() => _loading = true);
-    final battle =
-        await ref.read(appControllerProvider).generateBattle(type: type);
-    if (!mounted) return;
-    setState(() {
-      _battle = battle;
-      _loading = false;
-    });
-  }
-
-  Future<void> _vote(String profileId) async {
-    final battle = _battle;
-    if (battle == null) return;
-    await ref.read(appControllerProvider).voteBattle(battle, profileId);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final state = ref.watch(appControllerProvider);
-    final battle = _battle;
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Life Battles'),
-        actions: [
-          PopupMenuButton<BattleType>(
-            tooltip: 'New matchup type',
-            icon: const Icon(Icons.tune_rounded),
-            onSelected: (type) => _next(type: type),
-            itemBuilder: (_) => const [
-              PopupMenuItem(
-                  value: BattleType.random, child: Text('Random matchup')),
-              PopupMenuItem(
-                  value: BattleType.trending, child: Text('Trending profiles')),
-              PopupMenuItem(
-                  value: BattleType.country, child: Text('My country')),
-            ],
-          ),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : battle == null
-              ? const Padding(
-                  padding: EdgeInsets.all(20),
-                  child: EmptyState(
-                    icon: Icons.sports_martial_arts_rounded,
-                    title: 'No battles available yet',
-                    subtitle:
-                        'Life Battles need at least two public, discoverable profiles to judge. Check back once more people join Discover.',
-                  ),
-                )
-              : _BattleContent(
-                  battle: battle,
-                  state: state,
-                  onVote: _vote,
-                  onNext: () => _next(),
-                ),
-    );
-  }
-}
-
-class _BattleContent extends StatelessWidget {
-  const _BattleContent(
-      {required this.battle,
-      required this.state,
-      required this.onVote,
-      required this.onNext});
-
-  final Battle battle;
-  final AppController state;
-  final ValueChanged<String> onVote;
-  final VoidCallback onNext;
-
-  @override
-  Widget build(BuildContext context) {
-    final a = state.profileById(battle.profileAId);
-    final b = state.profileById(battle.profileBId);
-    if (a == null || b == null) {
-      return Padding(
-        padding: const EdgeInsets.all(20),
-        child: EmptyState(
-          icon: Icons.error_outline_rounded,
-          title: 'This matchup is no longer available',
-          subtitle: 'One of these profiles is no longer eligible to battle.',
-          action: GradientButton(
-              label: 'Next Battle',
-              gradient: AppColors.purpleGradient,
-              onPressed: onNext),
-        ),
-      );
-    }
-    final result = state.battleResultFor(battle);
-    final categories = state.battleCategoryComparison(battle);
-    final voted = result.hasVoted;
-
-    return ListView(
-      padding: const EdgeInsets.all(20),
-      children: [
-        const SectionTitle("Who's winning at life?"),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: _BattleSide(
-                profile: a,
-                voted: voted,
-                isMine: result.myVote?.chosenProfileId == a.id,
-                percentage: result.percentageForA,
-                onTap: voted ? null : () => onVote(a.id),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.only(top: 90),
-              child: Text('VS',
-                  style: AppTypography.eyebrow
-                      .copyWith(fontSize: 16, color: AppColors.textMuted)),
-            ),
-            Expanded(
-              child: _BattleSide(
-                profile: b,
-                voted: voted,
-                isMine: result.myVote?.chosenProfileId == b.id,
-                percentage: result.percentageForB,
-                onTap: voted ? null : () => onVote(b.id),
-              ),
-            ),
-          ],
-        ),
-        if (!voted)
-          Padding(
-            padding: const EdgeInsets.only(top: 14),
-            child: Text('Tap a profile to cast your vote.',
-                textAlign: TextAlign.center, style: AppTypography.bodyMuted),
-          )
-        else
-          Padding(
-            padding: const EdgeInsets.only(top: 14),
-            child: Text(
-              'Estimated split — not a live tally.',
-              textAlign: TextAlign.center,
-              style: AppTypography.caption.copyWith(color: AppColors.textMuted),
-            ),
-          ),
-        const SectionTitle('Category Breakdown'),
-        AppCard(
-          child: Column(
-            children: [
-              for (final row in categories)
-                _CategoryBar(label: row.$1, a: row.$2, b: row.$3),
-            ],
-          ),
-        ),
-        const SizedBox(height: 20),
-        if (voted)
-          GradientButton(
-              label: 'Next Battle',
-              icon: Icons.skip_next_rounded,
-              gradient: AppColors.purpleGradient,
-              onPressed: onNext)
-        else
-          Center(
-            child: TextButton(
-                onPressed: onNext, child: const Text('Skip this matchup')),
-          ),
-      ],
-    );
-  }
-}
-
-class _BattleSide extends StatelessWidget {
-  const _BattleSide({
-    required this.profile,
-    required this.voted,
-    required this.isMine,
-    required this.percentage,
-    required this.onTap,
-  });
-
-  final UserProfile profile;
-  final bool voted;
-  final bool isMine;
-  final int percentage;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        children: [
-          ClipRRect(
-            borderRadius: AppRadius.lgRadius,
-            child: SizedBox(
-              height: 220,
-              child: Stack(
-                fit: StackFit.expand,
-                children: [
-                  ProfileImage(
-                      photo: profile.profilePhoto,
-                      label: profile.displayName,
-                      height: 220),
-                  if (isMine)
-                    Positioned(
-                      top: 8,
-                      right: 8,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.55),
-                            shape: BoxShape.circle),
-                        child: const Padding(
-                          padding: EdgeInsets.all(4),
-                          child: Icon(Icons.check_circle_rounded,
-                              color: AppColors.gold, size: 20),
-                        ),
-                      ),
-                    ),
-                  if (voted)
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.68)),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 8),
-                          child: Text(
-                            '$percentage%',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              color: isMine ? AppColors.gold : Colors.white,
-                              fontWeight: FontWeight.w900,
-                              fontSize: 18,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(profile.displayName,
-              style: AppTypography.body.copyWith(fontWeight: FontWeight.w900),
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis),
-          Text('Score ${profile.score.overall}',
-              style:
-                  AppTypography.caption.copyWith(color: AppColors.textMuted)),
-        ],
-      ),
-    );
-  }
-}
-
-class _CategoryBar extends StatelessWidget {
-  const _CategoryBar({required this.label, required this.a, required this.b});
-
-  final String label;
-  final int a;
-  final int b;
-
-  @override
-  Widget build(BuildContext context) {
-    final total = (a + b).clamp(1, 200);
-    final aShare = ((a / total) * 100).round().clamp(2, 98);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Text('$a',
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w900, color: AppColors.blue)),
-              Expanded(
-                child: Center(
-                  child: Text(label,
-                      style: AppTypography.caption
-                          .copyWith(color: AppColors.textMuted)),
-                ),
-              ),
-              Text('$b',
-                  style: const TextStyle(
-                      fontWeight: FontWeight.w900, color: AppColors.pink)),
-            ],
-          ),
-          const SizedBox(height: 4),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(6),
-            child: SizedBox(
-              height: 8,
-              child: Row(
-                children: [
-                  Expanded(
-                      flex: aShare,
-                      child: const ColoredBox(color: AppColors.blue)),
-                  Expanded(
-                      flex: 100 - aShare,
-                      child: const ColoredBox(color: AppColors.pink)),
-                ],
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
 /// A daily would-you-rather prompt. Unlike Life Battles' estimated split,
 /// this shows a real vote tally once you've answered — see
 /// `ChoiceService`'s doc comment for why that's possible here but not
 /// there.
-class WhatWouldYouChooseScreen extends ConsumerWidget {
+class WhatWouldYouChooseScreen extends ConsumerStatefulWidget {
   const WhatWouldYouChooseScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<WhatWouldYouChooseScreen> createState() => _WhatWouldYouChooseScreenState();
+}
+
+class _WhatWouldYouChooseScreenState extends ConsumerState<WhatWouldYouChooseScreen> {
+  ChoiceOption? _locking;
+
+  Future<void> _choose(ChoiceOption option) async {
+    if (_locking != null) return;
+    HapticFeedback.selectionClick();
+    playSfx(AppSfx.choiceSelect);
+    setState(() => _locking = option);
+    await ref.read(appControllerProvider).submitChoice(option);
+    if (!mounted) return;
+    HapticFeedback.mediumImpact();
+    playSfx(AppSfx.choiceReveal);
+    setState(() => _locking = null);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final state = ref.watch(appControllerProvider);
     final choice = state.todaysChoice;
     final myVote = state.myChoiceVoteToday;
@@ -5826,18 +6216,23 @@ class WhatWouldYouChooseScreen extends ConsumerWidget {
     final pctB = 100 - pctA;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('What Would You Choose')),
+      appBar: AppBar(title: const Text('Would You Choose?')),
       body: ListView(
         padding: const EdgeInsets.all(20),
         children: [
-          const SectionTitle('Would you rather...'),
+          Text(voted ? 'THE CROWD HAS SPOKEN 👀' : "TODAY'S QUESTION",
+              style: AppTypography.eyebrow.copyWith(color: AppColors.gold)),
+          const SizedBox(height: 4),
+          Text('🤔 Would you rather...', style: AppTypography.title),
+          const SizedBox(height: 16),
           _ChoiceOption(
             prompt: choice.promptA,
             gradient: AppColors.purpleGradient,
             voted: voted,
             isMine: myVote?.chosenOption == ChoiceOption.a,
             percentage: pctA,
-            onTap: voted ? null : () => ref.read(appControllerProvider).submitChoice(ChoiceOption.a),
+            locking: _locking == ChoiceOption.a,
+            onTap: voted || _locking != null ? null : () => _choose(ChoiceOption.a),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 10),
@@ -5849,16 +6244,40 @@ class WhatWouldYouChooseScreen extends ConsumerWidget {
             voted: voted,
             isMine: myVote?.chosenOption == ChoiceOption.b,
             percentage: pctB,
-            onTap: voted ? null : () => ref.read(appControllerProvider).submitChoice(ChoiceOption.b),
+            locking: _locking == ChoiceOption.b,
+            onTap: voted || _locking != null ? null : () => _choose(ChoiceOption.b),
           ),
           const SizedBox(height: 18),
-          Text(
-            voted
-                ? 'Real results from $total ${total == 1 ? 'vote' : 'votes'} today.'
-                : 'Tap an option to see how everyone else answered.',
-            textAlign: TextAlign.center,
-            style: AppTypography.caption.copyWith(color: AppColors.textMuted),
-          ),
+          if (voted)
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
+              decoration: BoxDecoration(
+                color: AppColors.green.withValues(alpha: 0.12),
+                borderRadius: AppRadius.pillRadius,
+                border: Border.all(color: AppColors.green.withValues(alpha: 0.4)),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.check_circle_rounded, color: AppColors.green, size: 16),
+                      const SizedBox(width: 6),
+                      Text('You answered today\'s question',
+                          style: AppTypography.caption.copyWith(color: AppColors.green)),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text('Come back tomorrow for a new one.', style: AppTypography.caption),
+                ],
+              ),
+            )
+          else
+            Text(
+              'Tap an option to see how everyone else answered.',
+              textAlign: TextAlign.center,
+              style: AppTypography.caption,
+            ),
         ],
       ),
     );
@@ -5872,6 +6291,7 @@ class _ChoiceOption extends StatelessWidget {
     required this.voted,
     required this.isMine,
     required this.percentage,
+    required this.locking,
     required this.onTap,
   });
 
@@ -5880,45 +6300,73 @@ class _ChoiceOption extends StatelessWidget {
   final bool voted;
   final bool isMine;
   final int percentage;
+  final bool locking;
   final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
       onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        constraints: const BoxConstraints(minHeight: 110),
-        padding: const EdgeInsets.all(18),
-        decoration: BoxDecoration(
-          gradient: gradient,
-          borderRadius: AppRadius.lgRadius,
-          border: isMine ? Border.all(color: Colors.white, width: 2) : null,
-          boxShadow: isMine ? [BoxShadow(color: Colors.white.withValues(alpha: 0.3), blurRadius: 14)] : null,
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Text(
-                prompt,
-                style: AppTypography.heading.copyWith(color: Colors.white, fontSize: 18),
-              ),
-            ),
-            if (voted)
-              Padding(
-                padding: const EdgeInsets.only(left: 8),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (isMine) const Icon(Icons.check_circle_rounded, color: Colors.white, size: 22),
-                    Text(
-                      '$percentage%',
-                      style: AppTypography.title.copyWith(color: Colors.white, fontSize: 20),
+      child: AnimatedScale(
+        scale: locking ? 0.97 : 1,
+        duration: const Duration(milliseconds: 150),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          constraints: const BoxConstraints(minHeight: 110),
+          padding: const EdgeInsets.all(18),
+          decoration: BoxDecoration(
+            gradient: gradient,
+            borderRadius: AppRadius.lgRadius,
+            border: isMine ? Border.all(color: Colors.white, width: 2) : null,
+            boxShadow: isMine ? [BoxShadow(color: Colors.white.withValues(alpha: 0.3), blurRadius: 14)] : null,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      prompt,
+                      style: AppTypography.heading.copyWith(color: Colors.white, fontSize: 18),
                     ),
-                  ],
-                ),
+                  ),
+                  if (voted)
+                    Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (isMine) const Icon(Icons.check_circle_rounded, color: Colors.white, size: 22),
+                          AnimatedCountUp(
+                            value: percentage.toDouble(),
+                            suffix: '%',
+                            style: AppTypography.title.copyWith(color: Colors.white, fontSize: 20),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
               ),
-          ],
+              if (voted) ...[
+                const SizedBox(height: 10),
+                TweenAnimationBuilder<double>(
+                  tween: Tween(begin: 0, end: percentage / 100),
+                  duration: const Duration(milliseconds: 700),
+                  curve: Curves.easeOutCubic,
+                  builder: (context, value, _) => ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: LinearProgressIndicator(
+                      value: value,
+                      minHeight: 8,
+                      backgroundColor: Colors.black.withValues(alpha: 0.25),
+                      valueColor: const AlwaysStoppedAnimation(Colors.white),
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
     );

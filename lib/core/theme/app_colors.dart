@@ -34,6 +34,12 @@ class AppColors {
   static const Color neonRed = Color(0xFFFF2E4D);
   static const Color neonRedDeep = Color(0xFFC4001E);
 
+  /// The Nuke feature's own accent — deliberately distinct from
+  /// `neonRed` (used elsewhere for destructive/urgent actions like
+  /// ending a call) so Nuke reads as its own "hazard" identity.
+  static const Color nukeOrange = Color(0xFFFA7308);
+  static const Color nukeOrangeDeep = Color(0xFFC85C06);
+
   // Semantic
   static const Color success = Color(0xFF35D07F);
   static const Color danger = Color(0xFFFF4D6A);
@@ -72,6 +78,12 @@ class AppColors {
     begin: Alignment.topLeft,
     end: Alignment.bottomRight,
     colors: [neonRed, neonRedDeep],
+  );
+
+  static const LinearGradient nukeOrangeGradient = LinearGradient(
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+    colors: [nukeOrange, nukeOrangeDeep],
   );
 
   static const RadialGradient heroGlow = RadialGradient(

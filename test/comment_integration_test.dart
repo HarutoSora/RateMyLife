@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:rate_my_life/data/models/models.dart';
 import 'package:rate_my_life/data/repositories/repositories.dart';
 import 'package:rate_my_life/presentation/state/app_state.dart';
@@ -135,6 +136,43 @@ class _FakePhotoVoteRepository implements PhotoVoteRepository {
   Future<void> saveVotes(List<PhotoVote> votes) async => stored = votes;
 }
 
+class _FakeNukeRepository implements NukeRepository {
+  List<NukeEvent> stored = [];
+  @override
+  Future<List<NukeEvent>> loadSentHistory() async => stored;
+  @override
+  Future<NukeEvent> attack({
+    required String attackerId,
+    required UserProfile target,
+    required String attribute,
+  }) async {
+    final event = NukeEvent(
+      id: 'nuke_${stored.length}',
+      attackerId: attackerId,
+      targetId: target.id,
+      targetName: target.displayName,
+      attribute: attribute,
+      damage: -5,
+      createdAt: DateTime.now(),
+    );
+    stored = [...stored, event];
+    return event;
+  }
+}
+
+class _FakePurchaseRepository implements PurchaseRepository {
+  @override
+  Future<bool> isAvailable() async => false;
+  @override
+  Future<List<ProductDetails>> queryProducts(Set<String> productIds) async => [];
+  @override
+  Future<void> buyConsumable(ProductDetails product) async {}
+  @override
+  Stream<List<PurchaseDetails>> get purchaseUpdates => const Stream.empty();
+  @override
+  Future<void> completePurchase(PurchaseDetails purchase) async {}
+}
+
 class _FakeNotificationRepository implements NotificationRepository {
   bool permissionGranted = true;
   bool scheduled = false;
@@ -144,6 +182,10 @@ class _FakeNotificationRepository implements NotificationRepository {
   Future<void> scheduleDailyChallengeReminder() async => scheduled = true;
   @override
   Future<void> cancelDailyChallengeReminder() async => scheduled = false;
+  @override
+  Future<void> showNotification({required String title, required String body, String? payload}) async {}
+  @override
+  Stream<String> get notificationTaps => const Stream.empty();
 }
 
 class _FakeCommentRepository implements CommentRepository {
@@ -298,6 +340,8 @@ void main() {
       challengeRepository: _FakeChallengeRepository(),
       cosmeticRepository: _FakeCosmeticRepository(),
       photoVoteRepository: _FakePhotoVoteRepository(),
+      nukeRepository: _FakeNukeRepository(),
+      purchaseRepository: _FakePurchaseRepository(),
       notificationRepository: _FakeNotificationRepository(),
       commentRepository: commentRepository,
       messageRepository: _FakeMessageRepository(),

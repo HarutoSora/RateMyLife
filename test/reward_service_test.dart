@@ -13,6 +13,9 @@ void main() {
       XpReason.dailyChallengeCompleted,
       XpReason.cosmeticPurchased,
       XpReason.boostPurchased,
+      XpReason.nukeUsed,
+      XpReason.curePotionUsed,
+      XpReason.coinsPurchased,
     };
 
     test('awards the configured coin amount for each fixed-reward reason', () {

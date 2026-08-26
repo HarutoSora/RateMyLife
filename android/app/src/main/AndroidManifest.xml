@@ -43,6 +43,19 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <!-- Without this, Android auto-displays a background/killed-app
+             push (see functions/index.js) on its own generic fallback
+             channel instead of the "Messages & Calls" channel
+             LocalNotificationRepository actually creates. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_channel_id"
+            android:value="activity" />
+        <!-- Google Mobile Ads (AdMob) app ID — required by the SDK at
+             startup regardless of which ad units are actually loaded.
+             See AdRepository / ad_config.dart for the ad unit IDs. -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="ca-app-pub-9503065477167980~9206845093" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

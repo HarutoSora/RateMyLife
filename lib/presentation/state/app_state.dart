@@ -2,11 +2,14 @@ import 'dart:async';
 import 'dart:math';
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:uuid/uuid.dart';
 
+import '../../core/purchases/purchase_config.dart';
 import '../../data/models/models.dart';
 import '../../data/repositories/repositories.dart';
 import '../../domain/services/achievement_service.dart';
@@ -16,6 +19,7 @@ import '../../domain/services/daily_challenge_service.dart';
 import '../../domain/services/level_service.dart';
 import '../../domain/services/message_service.dart';
 import '../../domain/services/moderation_service.dart';
+import '../../domain/services/nuke_service.dart';
 import '../../domain/services/photo_quality_service.dart';
 
 final repositoryBundleProvider = Provider<RepositoryBundle>((ref) {
@@ -28,6 +32,7 @@ final repositoryBundleProvider = Provider<RepositoryBundle>((ref) {
     profileRepository: signedIn ? RemoteProfileRepository() : null,
     ratingRepository: signedIn ? RemoteRatingRepository() : null,
     photoVoteRepository: signedIn ? RemotePhotoVoteRepository() : null,
+    nukeRepository: signedIn ? RemoteNukeRepository() : null,
     photoRepository: signedIn ? RemotePhotoRepository() : null,
     commentRepository: signedIn ? RemoteCommentRepository() : null,
     commentReactionRepository: signedIn ? RemoteCommentReactionRepository() : null,
@@ -36,6 +41,7 @@ final repositoryBundleProvider = Provider<RepositoryBundle>((ref) {
     battleRepository: signedIn ? RemoteBattleRepository() : null,
     battleVoteRepository: signedIn ? RemoteBattleVoteRepository() : null,
     choiceRepository: signedIn ? RemoteChoiceRepository() : null,
+    pushNotificationRepository: signedIn ? RemotePushNotificationRepository() : null,
     progressionRepository: signedIn ? RemoteProgressionRepository() : null,
     appOpenRepository: signedIn ? RemoteAppOpenRepository() : null,
     achievementRepository: signedIn ? RemoteAchievementRepository() : null,
@@ -57,6 +63,13 @@ class AppController extends ChangeNotifier {
 
   final Reader _read;
   final Uuid _uuid = const Uuid();
+
+  /// Counts XP-granting actions (ratings, votes, choices, shares, etc.
+  /// — see `_awardXp`, the shared choke point every one of them already
+  /// goes through) toward the periodic interstitial ad. Session-only by
+  /// design — not persisted, so it resets on a fresh app launch rather
+  /// than needing its own repository for an MVP-scoped ad cadence.
+  int _actionCount = 0;
 
   bool isLoading = true;
   bool hasSeenOnboarding = false;
@@ -84,11 +97,57 @@ class AppController extends ChangeNotifier {
   List<CommentReaction> commentReactions = [];
   List<Battle> battles = [];
   List<BattleVote> battleVotes = [];
+  /// This device's own sent nuke-attack history — see `NukeEvent`'s doc
+  /// comment for why there's no symmetric "received" list.
+  List<NukeEvent> nukeHistory = [];
   List<ChoiceVote> choiceVotes = [];
   ChoiceTally? todaysChoiceTally;
   CallSession? currentCall;
   StreamSubscription<CallSession?>? _callSubscription;
   StreamSubscription<List<Message>>? _messagesSubscription;
+  StreamSubscription<RemoteMessage>? _foregroundMessagesSubscription;
+  StreamSubscription<String>? _notificationTapSubscription;
+  StreamSubscription<RemoteMessage>? _openedMessagesSubscription;
+  StreamSubscription<List<PurchaseDetails>>? _purchaseSubscription;
+
+  /// Whether the store (Play/App Store) is reachable at all — false
+  /// almost always means "not signed into an account with purchase
+  /// capability," not a transient error. `GetCoinsScreen` uses this to
+  /// decide whether buy buttons should even try.
+  bool purchasesAvailable = false;
+
+  /// Real store metadata (localized price, title) for whichever coin
+  /// packages actually exist as configured products — see
+  /// `PurchaseConfig`'s doc comment on why this can be empty even when
+  /// [purchasesAvailable] is true (no Play Console listing yet).
+  List<ProductDetails> purchaseProducts = [];
+
+  /// Set when the user taps a message notification (foreground, tapped
+  /// from the tray while backgrounded, or the app cold-starting from a
+  /// tap) — `RateMyLifeApp` watches this and pushes `ConversationScreen`
+  /// once it's ready, then calls `clearPendingConversationOpen`. A call
+  /// notification needs no equivalent: `currentCall` already drives
+  /// `CallScreen` reactively the instant the app is open, tap or not.
+  String? pendingConversationOpen;
+
+  void clearPendingConversationOpen() {
+    pendingConversationOpen = null;
+  }
+
+  void _handleNotificationPayload(String? payload) {
+    if (payload == null || !payload.startsWith('message:')) return;
+    pendingConversationOpen = payload.substring('message:'.length);
+    notifyListeners();
+  }
+
+  void _handleOpenedMessage(RemoteMessage message) {
+    if (message.data['type'] != 'message') return;
+    final otherUserId = message.data['otherUserId'];
+    if (otherUserId is String) {
+      pendingConversationOpen = otherUserId;
+      notifyListeners();
+    }
+  }
 
   /// This device's own authored comments, across every profile —
   /// loaded once, kept in sync on `addComment` — used only for the
@@ -543,6 +602,7 @@ class AppController extends ChangeNotifier {
     // needed for the posting rate limit.
     battles = await repo.battleRepository.loadBattles();
     battleVotes = await repo.battleVoteRepository.loadVotes();
+    nukeHistory = await repo.nukeRepository.loadSentHistory();
     choiceVotes = await repo.choiceRepository.loadMyVotes();
     if (_repos.choiceService.hasVoted(choiceVotes, todaysChoice.id)) {
       todaysChoiceTally = await repo.choiceRepository.loadTally(todaysChoice.id);
@@ -560,6 +620,27 @@ class AppController extends ChangeNotifier {
       currentCall = call;
       notifyListeners();
     });
+    unawaited(_foregroundMessagesSubscription?.cancel());
+    _foregroundMessagesSubscription = repo.pushNotificationRepository.foregroundMessages.listen((message) {
+      final title = message.notification?.title;
+      final body = message.notification?.body;
+      if (title == null) return;
+      final otherUserId = message.data['otherUserId'];
+      final payload = message.data['type'] == 'message' && otherUserId is String ? 'message:$otherUserId' : null;
+      repo.notificationRepository.showNotification(title: title, body: body ?? '', payload: payload);
+    });
+    // Tapping the notification `showNotification` just displayed (app
+    // was in the foreground when the message arrived).
+    unawaited(_notificationTapSubscription?.cancel());
+    _notificationTapSubscription = repo.notificationRepository.notificationTaps.listen(_handleNotificationPayload);
+    // Tapping a background-delivered notification (app open but not
+    // foreground when it arrived).
+    unawaited(_openedMessagesSubscription?.cancel());
+    _openedMessagesSubscription = repo.pushNotificationRepository.openedMessages.listen(_handleOpenedMessage);
+    // The app was fully killed and this exact launch is the result of
+    // tapping a notification — only meaningful once, right at startup.
+    final initialMessage = await repo.pushNotificationRepository.getInitialMessage();
+    if (initialMessage != null) _handleOpenedMessage(initialMessage);
     if (currentProfile != null) {
       currentProfile = _refreshProfileSummary(currentProfile!);
       profiles = [currentProfile!, ...profiles];
@@ -572,7 +653,18 @@ class AppController extends ChangeNotifier {
     // needing one, and never re-prompts for permission on every launch.
     if (settings.notifications) {
       await repo.notificationRepository.scheduleDailyChallengeReminder();
+      await repo.pushNotificationRepository.registerDevice();
     }
+    purchasesAvailable = await repo.purchaseRepository.isAvailable();
+    if (purchasesAvailable) {
+      purchaseProducts = await repo.purchaseRepository.queryProducts(PurchaseConfig.allProductIds.toSet());
+    }
+    // Subscribed regardless of `purchasesAvailable` — a purchase from a
+    // previous session that never got acknowledged (app killed
+    // mid-flow, etc.) still needs to be caught and completed here, the
+    // same reasoning as the messages/calls subscriptions above.
+    unawaited(_purchaseSubscription?.cancel());
+    _purchaseSubscription = repo.purchaseRepository.purchaseUpdates.listen(_handlePurchaseUpdates);
     isLoading = false;
     notifyListeners();
   }
@@ -603,15 +695,9 @@ class AppController extends ChangeNotifier {
       ...profiles.where((item) => item.id != recalculated.id),
     ];
     await _repos.profileRepository.saveCurrentProfile(recalculated);
-    final xpAmount = await _grantXp(XpReason.profileCompleted);
-    final coinAmount = await _grantCoins(XpReason.profileCompleted);
-    final challengeResult = await _checkDailyChallenges();
-    toast = _composeRewardToast(
-      message: 'Profile created!',
-      xp: xpAmount + challengeResult.xp,
-      coins: coinAmount + challengeResult.coins,
-      challengeTitles: challengeResult.titles,
-    );
+    await _grantXp(XpReason.profileCompleted);
+    await _grantCoins(XpReason.profileCompleted);
+    await _checkDailyChallenges();
     notifyListeners();
     await _checkAchievements();
   }
@@ -666,6 +752,81 @@ class AppController extends ChangeNotifier {
     return _applyCoinTransaction(_repos.rewardService.award(profileId: profile.id, reason: reason));
   }
 
+  /// Shows a rewarded video ad; grants coins (see `RewardService`'s
+  /// `XpReason.adWatched` entry) only if the user watches it to
+  /// completion — returns whether that actually happened, so callers can
+  /// show a real success/failure state instead of assuming success.
+  /// Never throws for an unavailable/failed/closed-early ad, since ad
+  /// availability is inherently unreliable — that's a normal `false`
+  /// result, not an error.
+  /// Guards `watchRewardedAd` against a double-tap (or any other
+  /// double-call) firing two overlapping ad shows — without this, two
+  /// rapid taps on "Watch Ad" could both resolve with a reward and grant
+  /// coins twice for one ad watch.
+  bool _watchingAd = false;
+
+  Future<bool> watchRewardedAd() async {
+    if (_watchingAd) return false;
+    _watchingAd = true;
+    try {
+      var rewarded = false;
+      await _repos.adRepository.showRewardedAd(onReward: () => rewarded = true);
+      if (rewarded) await _grantAdReward();
+      return rewarded;
+    } finally {
+      _watchingAd = false;
+    }
+  }
+
+  Future<void> _grantAdReward() async {
+    final earned = await _grantCoins(XpReason.adWatched);
+    if (earned == 0) return;
+    notifyListeners();
+  }
+
+  /// Starts a real Play/App Store purchase flow for [productId] (see
+  /// `PurchaseConfig`). No-ops with an explanatory toast if the store
+  /// isn't reachable or the product doesn't exist yet (e.g. no Play
+  /// Console listing) — the actual coin grant happens later, in
+  /// `_handlePurchaseUpdates`, once the store confirms the purchase.
+  Future<void> purchaseCoins(String productId) async {
+    final product = purchaseProducts.where((p) => p.id == productId).firstOrNull;
+    if (product == null) {
+      toast = purchasesAvailable
+          ? 'This coin package isn\'t available yet.'
+          : 'In-app purchases aren\'t available on this device right now.';
+      notifyListeners();
+      return;
+    }
+    await _repos.purchaseRepository.buyConsumable(product);
+  }
+
+  /// Every purchase event the store reports, successful or not — see
+  /// `PurchaseRepository.purchaseUpdates`'s doc comment for why this
+  /// has to handle every event, not just ones from this exact session's
+  /// own `purchaseCoins` calls.
+  Future<void> _handlePurchaseUpdates(List<PurchaseDetails> purchases) async {
+    for (final purchase in purchases) {
+      switch (purchase.status) {
+        case PurchaseStatus.pending:
+          continue;
+        case PurchaseStatus.error:
+          toast = purchase.error?.message ?? 'Purchase failed.';
+          notifyListeners();
+        case PurchaseStatus.purchased:
+        case PurchaseStatus.restored:
+          final coins = PurchaseConfig.coinsForProduct[purchase.productID];
+          if (coins != null) {
+            await _grantCustomCoins(coins, XpReason.coinsPurchased);
+            notifyListeners();
+          }
+        case PurchaseStatus.canceled:
+          break;
+      }
+      await _repos.purchaseRepository.completePurchase(purchase);
+    }
+  }
+
   /// [amount] may be negative — spending on a cosmetic is just a
   /// negative-amount transaction, same ledger as earning.
   Future<int> _grantCustomCoins(int amount, XpReason reason) async {
@@ -704,8 +865,7 @@ class AppController extends ChangeNotifier {
       CosmeticPurchase(id: _uuid.v4(), profileId: profile.id, cosmeticId: frameId, purchasedAt: DateTime.now()),
     ];
     await _repos.cosmeticRepository.savePurchases(cosmeticPurchases);
-    final spent = await _grantCustomCoins(-frame.cost, XpReason.cosmeticPurchased);
-    toast = 'Unlocked ${frame.name}! (-${spent.abs()} coins)';
+    await _grantCustomCoins(-frame.cost, XpReason.cosmeticPurchased);
     notifyListeners();
   }
 
@@ -715,7 +875,7 @@ class AppController extends ChangeNotifier {
     final profile = currentProfile;
     if (profile == null) return;
     if (!_repos.cosmeticService.isOwned(frameId, ownedFrameIds)) return;
-    await updateProfile(profile.copyWith(equippedFrameId: frameId), message: 'Frame equipped.');
+    await updateProfile(profile.copyWith(equippedFrameId: frameId));
   }
 
   Future<int> _applyCoinTransaction(CoinTransaction tx) async {
@@ -738,6 +898,10 @@ class AppController extends ChangeNotifier {
   Future<void> _checkAchievements() async {
     final profile = currentProfile;
     if (profile == null) return;
+    // Every action that reaches this shared post-action checkpoint
+    // (ratings, battle/choice votes, messages, comments, etc.) counts
+    // toward the periodic interstitial — see `_maybeShowInterstitialAd`.
+    _maybeShowInterstitialAd();
     final stats = AchievementStats(
       hasProfile: true,
       ratingsGiven: ratings.where((r) => r.raterId == currentUserId).length,
@@ -771,6 +935,16 @@ class AppController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Every 30th action shows a full-screen interstitial — user-requested
+  /// ad cadence. Fire-and-forget: an ad (or a failed load) must never
+  /// block or delay the action that triggered it.
+  void _maybeShowInterstitialAd() {
+    _actionCount++;
+    if (_actionCount % 30 == 0) {
+      unawaited(_repos.adRepository.showInterstitialAd());
+    }
+  }
+
   /// Called by the UI after showing (or dismissing) the front of
   /// `achievementQueue`.
   void dequeueAchievement() {
@@ -782,10 +956,9 @@ class AppController extends ChangeNotifier {
   /// Checks today's 3 challenges against real activity and claims (with
   /// XP + coins already granted and persisted) any that are newly
   /// completed and not already claimed today. Unlike achievements, this
-  /// does NOT touch `toast`/`notifyListeners` — callers fold the
-  /// returned totals into their own single toast via
-  /// `_composeRewardToast`, for the same race-avoidance reason as
-  /// `_grantXp`.
+  /// does NOT touch `notifyListeners` — callers call this alongside their
+  /// own XP/coin grants and notify once, for the same race-avoidance
+  /// reason as `_grantXp`.
   Future<({int xp, int coins, List<String> titles})> _checkDailyChallenges() async {
     final profile = currentProfile;
     if (profile == null) return (xp: 0, coins: 0, titles: const <String>[]);
@@ -816,45 +989,13 @@ class AppController extends ChangeNotifier {
     return (xp: xpGained, coins: coinsGained, titles: titles);
   }
 
-  /// Builds one toast combining a base [message] with any XP/coins
-  /// earned and any challenges completed — the single-notify pattern
-  /// every reward-granting action below uses. Returns '' (never assign
-  /// that to `toast` — an empty string still reads as "has a toast" to
-  /// the app shell) when there is nothing to say.
-  String _composeRewardToast({String? message, int xp = 0, int coins = 0, List<String> challengeTitles = const []}) {
-    final segments = [
-      if (message != null) message,
-      for (final title in challengeTitles) 'Challenge complete: $title!',
-    ];
-    var text = segments.join(' ');
-    final rewardBits = [
-      if (xp > 0) '+$xp XP',
-      if (coins > 0) '+$coins coins',
-    ];
-    if (rewardBits.isNotEmpty) {
-      final rewardText = '(${rewardBits.join(', ')})';
-      text = text.isEmpty ? rewardText : '$text $rewardText';
-    }
-    return text;
-  }
-
   /// Single-notify convenience for call sites that don't already have
   /// their own toast to combine with (see `_grantXp` for why this
   /// matters).
   Future<void> _awardXp(XpReason reason) async {
-    final xpAmount = await _grantXp(reason);
-    final coinAmount = await _grantCoins(reason);
-    final challengeResult = await _checkDailyChallenges();
-    final totalXp = xpAmount + challengeResult.xp;
-    final totalCoins = coinAmount + challengeResult.coins;
-    if (totalXp == 0 && totalCoins == 0 && challengeResult.titles.isEmpty) return;
-    final composed = _composeRewardToast(
-      message: toast,
-      xp: totalXp,
-      coins: totalCoins,
-      challengeTitles: challengeResult.titles,
-    );
-    if (composed.isNotEmpty) toast = composed;
+    await _grantXp(reason);
+    await _grantCoins(reason);
+    await _checkDailyChallenges();
     notifyListeners();
     await _checkAchievements();
   }
@@ -862,11 +1003,9 @@ class AppController extends ChangeNotifier {
   /// Called after the local user shares their own profile.
   Future<void> awardProfileSharedXp() => _awardXp(XpReason.profileShared);
 
-  /// [xpReason], if given, grants XP as part of this same update and
-  /// combines it into one toast — see `_grantXp` for why that matters
-  /// more than it sounds.
-  Future<void> updateProfile(UserProfile profile, {String? message, XpReason? xpReason}) async {
-    final before = currentProfile?.score.overall;
+  /// [xpReason], if given, grants XP as part of this same update — see
+  /// `_grantXp` for why its return value isn't used directly here.
+  Future<void> updateProfile(UserProfile profile, {XpReason? xpReason}) async {
     final recalculated = _repos.profileService
         .recalculate(profile.copyWith(isCurrentUser: true));
     currentProfile = recalculated;
@@ -875,26 +1014,11 @@ class AppController extends ChangeNotifier {
       ...profiles.where((item) => item.id != recalculated.id),
     ];
     await _repos.profileRepository.saveCurrentProfile(recalculated);
-    String? message2;
-    if (message != null) {
-      message2 = message;
-    } else if (before != null && before != recalculated.score.overall) {
-      final delta = recalculated.score.overall - before;
-      message2 = 'Your Life Score changed: $before -> ${recalculated.score.overall} (${delta >= 0 ? '+' : ''}$delta)';
-    }
-    var xpAmount = 0;
-    var coinAmount = 0;
-    var challengeTitles = const <String>[];
     if (xpReason != null) {
-      xpAmount = await _grantXp(xpReason);
-      coinAmount = await _grantCoins(xpReason);
-      final challengeResult = await _checkDailyChallenges();
-      xpAmount += challengeResult.xp;
-      coinAmount += challengeResult.coins;
-      challengeTitles = challengeResult.titles;
+      await _grantXp(xpReason);
+      await _grantCoins(xpReason);
+      await _checkDailyChallenges();
     }
-    final composed = _composeRewardToast(message: message2, xp: xpAmount, coins: coinAmount, challengeTitles: challengeTitles);
-    if (composed.isNotEmpty) toast = composed;
     notifyListeners();
     await _checkAchievements();
   }
@@ -910,7 +1034,7 @@ class AppController extends ChangeNotifier {
         category: category,
       );
       final photos = _repos.photoService.addPhoto(profile.photos, photo);
-      await updateProfile(profile.copyWith(photos: photos), message: 'Photo added.', xpReason: XpReason.photoAdded);
+      await updateProfile(profile.copyWith(photos: photos), xpReason: XpReason.photoAdded);
     } catch (error) {
       toast = error.toString().replaceFirst('Exception: ', '');
       notifyListeners();
@@ -921,28 +1045,28 @@ class AppController extends ChangeNotifier {
     final profile = currentProfile;
     if (profile == null) return;
     final photos = _repos.photoService.deletePhoto(profile.photos, id);
-    await updateProfile(profile.copyWith(photos: photos), message: 'Photo deleted.');
+    await updateProfile(profile.copyWith(photos: photos));
   }
 
   Future<void> setProfilePhoto(String id) async {
     final profile = currentProfile;
     if (profile == null) return;
     final photos = _repos.photoService.setProfilePhoto(profile.photos, id);
-    await updateProfile(profile.copyWith(photos: photos), message: 'Profile photo updated.');
+    await updateProfile(profile.copyWith(photos: photos));
   }
 
   Future<void> setPhotoCategory(String id, String category) async {
     final profile = currentProfile;
     if (profile == null) return;
     final photos = _repos.photoService.setCategory(profile.photos, id, category);
-    await updateProfile(profile.copyWith(photos: photos), message: 'Photo category updated.');
+    await updateProfile(profile.copyWith(photos: photos));
   }
 
   Future<void> reorderPhoto(int oldIndex, int newIndex) async {
     final profile = currentProfile;
     if (profile == null) return;
     final photos = _repos.photoService.reorder(profile.photos, oldIndex, newIndex);
-    await updateProfile(profile.copyWith(photos: photos), message: 'Gallery reordered.');
+    await updateProfile(profile.copyWith(photos: photos));
   }
 
   /// Judges the PHOTOGRAPH — lighting/sharpness/resolution — never the
@@ -955,7 +1079,15 @@ class AppController extends ChangeNotifier {
     return _repos.photoQualityService.analyze(bytes);
   }
 
+  /// Profile ids with a `submitRating` call currently in flight — guards
+  /// against a double-tap (or any other double-call) firing two
+  /// overlapping submissions for the same profile before the first
+  /// one's local `ratings` update lands, which would otherwise race two
+  /// writes against the same Firestore rating document.
+  final _submittingRatings = <String>{};
+
   Future<void> submitRating(UserProfile target, int life, int look) async {
+    if (!_submittingRatings.add(target.id)) return;
     try {
       final rating = _repos.ratingService.upsertRating(
         existing: ratings,
@@ -975,21 +1107,16 @@ class AppController extends ChangeNotifier {
       ];
       await _repos.ratingRepository.saveRatings(ratings);
       _applyRatingSummary(target.id);
-      final message = _ratingToast(life, _summaryFor(target.id).averageOverall);
-      final xpAmount = await _grantXp(XpReason.ratingGiven);
-      final coinAmount = await _grantCoins(XpReason.ratingGiven);
-      final challengeResult = await _checkDailyChallenges();
-      toast = _composeRewardToast(
-        message: message,
-        xp: xpAmount + challengeResult.xp,
-        coins: coinAmount + challengeResult.coins,
-        challengeTitles: challengeResult.titles,
-      );
+      await _grantXp(XpReason.ratingGiven);
+      await _grantCoins(XpReason.ratingGiven);
+      await _checkDailyChallenges();
       notifyListeners();
       await _checkAchievements();
     } catch (error) {
       toast = error.toString();
       notifyListeners();
+    } finally {
+      _submittingRatings.remove(target.id);
     }
   }
 
@@ -1001,7 +1128,6 @@ class AppController extends ChangeNotifier {
     );
     await _repos.ratingRepository.saveRatings(ratings);
     _applyRatingSummary(profileId);
-    toast = 'Your rating was removed.';
     notifyListeners();
   }
 
@@ -1031,7 +1157,6 @@ class AppController extends ChangeNotifier {
         vote,
       ];
       await _repos.photoVoteRepository.saveVotes(photoVotes);
-      toast = 'Vote counted.';
       notifyListeners();
     } catch (error) {
       toast = error.toString();
@@ -1047,10 +1172,131 @@ class AppController extends ChangeNotifier {
     )?.photoId;
   }
 
+  /// Damage this device has personally dealt to [profileId] via
+  /// `nukeProfile` — only meaningful for a mock/seed target, which has
+  /// no real backend of its own to carry `nukeDamage` for it (see
+  /// `NukeRepository`'s doc comment). Recomputed fresh from
+  /// `nukeHistory` every call rather than ever baked into the stored
+  /// `profiles`/`_discoverRaw` lists, so repeatedly nuking the same
+  /// mock target can never double-count.
+  Map<String, int> _localNukeDamageFor(String profileId) {
+    final damage = <String, int>{};
+    for (final event in nukeHistory) {
+      if (event.targetId != profileId) continue;
+      damage[event.attribute] = (damage[event.attribute] ?? 0) + event.damage;
+    }
+    return damage;
+  }
+
+  /// The Life Score a card/screen should actually render for [profile]
+  /// — folds in this device's own local nuke damage for a mock target;
+  /// a real, Firestore-synced profile's `score` already has every
+  /// attacker's damage baked in server-side (see `RemoteNukeRepository`),
+  /// so this is a no-op for one.
+  LifeScore displayScoreFor(UserProfile profile) {
+    if (!profile.id.startsWith('mock_')) return profile.score;
+    final damage = _localNukeDamageFor(profile.id);
+    if (damage.isEmpty) return profile.score;
+    return _repos.profileService.applyNukeDamage(profile.score, damage);
+  }
+
+  /// The "X nukes survived" count a card/screen should render — same
+  /// mock-only local mixing as `displayScoreFor`.
+  int nukesSurvivedFor(UserProfile profile) {
+    if (!profile.id.startsWith('mock_')) return profile.nukesSurvived;
+    return profile.nukesSurvived + nukeHistory.where((e) => e.targetId == profile.id).length;
+  }
+
+  /// Active nuke damage by attribute for [profile] — same mock-only
+  /// local mixing as `displayScoreFor`/`nukesSurvivedFor`, so a score
+  /// breakdown can flag exactly which category `displayScoreFor` just
+  /// lowered, for a mock target or a real one alike.
+  Map<String, int> nukeDamageFor(UserProfile profile) {
+    if (!profile.id.startsWith('mock_')) return profile.nukeDamage;
+    final local = _localNukeDamageFor(profile.id);
+    if (local.isEmpty) return profile.nukeDamage;
+    final merged = {...profile.nukeDamage};
+    for (final entry in local.entries) {
+      merged[entry.key] = (merged[entry.key] ?? 0) + entry.value;
+    }
+    return merged;
+  }
+
+  /// Guards `nukeProfile`/`cureDamage` against a double-tap (or any other
+  /// double-call) firing two overlapping spends before the first one's
+  /// `wallet.balance` update lands — both methods check the balance
+  /// synchronously up front, so two concurrent calls could otherwise
+  /// both pass that check against the same stale balance and spend more
+  /// coins than the wallet actually has. Shared across both since they
+  /// draw from the same coin balance.
+  bool _spendingCoins = false;
+
+  /// Spends `NukeService.attackCost` coins to deal `NukeService.
+  /// damagePerNuke` damage to a random Life Score attribute of
+  /// [target]'s profile. Anonymous to the target by default — see
+  /// `NukeEvent`'s doc comment.
+  Future<void> nukeProfile(UserProfile target) async {
+    if (_spendingCoins) return;
+    _spendingCoins = true;
+    try {
+      final attribute = _repos.nukeService.randomAttribute(Random());
+      try {
+        _repos.nukeService.assertCanNuke(
+          attackerId: currentUserId,
+          targetId: target.id,
+          isBlockedEitherWay: blockedIds.contains(target.id),
+          balance: wallet.balance,
+        );
+      } on NukeValidationException catch (error) {
+        toast = error.message;
+        notifyListeners();
+        return;
+      }
+      await _grantCustomCoins(-NukeService.attackCost, XpReason.nukeUsed);
+      final event = await _repos.nukeRepository.attack(
+        attackerId: currentUserId,
+        target: target,
+        attribute: attribute,
+      );
+      nukeHistory = [...nukeHistory, event];
+      notifyListeners();
+    } finally {
+      _spendingCoins = false;
+    }
+  }
+
+  /// Spends `NukeService.curePotionCost` coins to heal
+  /// `NukeService.healPerPotion` points of damage off [attribute] on
+  /// the local user's own profile — self-only, so unlike `nukeProfile`
+  /// this is just a normal profile edit, no other party involved.
+  Future<void> cureDamage(String attribute) async {
+    if (currentProfile == null || _spendingCoins) return;
+    _spendingCoins = true;
+    try {
+      _repos.nukeService.assertCanCure(balance: wallet.balance);
+    } on NukeValidationException catch (error) {
+      toast = error.message;
+      notifyListeners();
+      _spendingCoins = false;
+      return;
+    }
+    try {
+      final healedDamage = _repos.nukeService.mergeDamage(
+        currentProfile!.nukeDamage,
+        attribute,
+        NukeService.healPerPotion,
+      );
+      await _grantCustomCoins(-NukeService.curePotionCost, XpReason.curePotionUsed);
+      await updateProfile(currentProfile!.copyWith(nukeDamage: healedDamage));
+    } finally {
+      _spendingCoins = false;
+    }
+  }
+
   Future<void> updatePrivacy(ProfilePrivacy privacy) async {
     final profile = currentProfile;
     if (profile == null) return;
-    await updateProfile(profile.copyWith(privacy: privacy), message: 'Privacy updated.');
+    await updateProfile(profile.copyWith(privacy: privacy));
   }
 
   Future<void> updateSettings(UserSettings next) async {
@@ -1063,6 +1309,7 @@ class AppController extends ChangeNotifier {
       final granted = await _repos.notificationRepository.requestPermission();
       if (granted) {
         await _repos.notificationRepository.scheduleDailyChallengeReminder();
+        await _repos.pushNotificationRepository.registerDevice();
       } else {
         settings = settings.copyWith(notifications: false);
         await _repos.settingsRepository.saveSettings(settings);
@@ -1070,6 +1317,7 @@ class AppController extends ChangeNotifier {
       }
     } else if (notificationsJustDisabled) {
       await _repos.notificationRepository.cancelDailyChallengeReminder();
+      await _repos.pushNotificationRepository.unregisterDevice();
     }
     notifyListeners();
   }
@@ -1084,7 +1332,6 @@ class AppController extends ChangeNotifier {
       moderation.block(blockerId: currentUserId, blockedUserId: userId),
     ];
     await _repos.settingsRepository.saveBlockedUsers(blockedUsers);
-    toast = '$displayName is hidden from your feeds.';
     notifyListeners();
   }
 
@@ -1099,7 +1346,6 @@ class AppController extends ChangeNotifier {
       ),
     ];
     await _repos.settingsRepository.saveReports(reports);
-    toast = 'Report submitted. This profile is hidden from your feed.';
     await blockProfile(target);
   }
 
@@ -1124,7 +1370,6 @@ class AppController extends ChangeNotifier {
       comments = [...comments, comment];
       _myComments = [..._myComments, comment];
       await _repos.commentRepository.saveComments(comments);
-      toast = 'Comment posted.';
       notifyListeners();
     } on CommentValidationException catch (error) {
       toast = error.message;
@@ -1140,7 +1385,6 @@ class AppController extends ChangeNotifier {
         for (final comment in comments) comment.id == commentId ? updated : comment,
       ];
       await _repos.commentRepository.saveComments(comments);
-      toast = 'Comment updated.';
       notifyListeners();
     } on CommentValidationException catch (error) {
       toast = error.message;
@@ -1156,7 +1400,6 @@ class AppController extends ChangeNotifier {
         for (final comment in comments) comment.id == commentId ? deleted : comment,
       ];
       await _repos.commentRepository.saveComments(comments);
-      toast = 'Comment deleted.';
       notifyListeners();
     } on CommentValidationException catch (error) {
       toast = error.message;
@@ -1286,7 +1529,6 @@ class AppController extends ChangeNotifier {
       ),
     ];
     await _repos.settingsRepository.saveReports(reports);
-    toast = 'Message reported.';
     await blockUserId(message.senderId);
   }
 
@@ -1336,6 +1578,10 @@ class AppController extends ChangeNotifier {
   void dispose() {
     _callSubscription?.cancel();
     _messagesSubscription?.cancel();
+    _foregroundMessagesSubscription?.cancel();
+    _notificationTapSubscription?.cancel();
+    _openedMessagesSubscription?.cancel();
+    _purchaseSubscription?.cancel();
     super.dispose();
   }
 
@@ -1356,7 +1602,6 @@ class AppController extends ChangeNotifier {
       ),
     ];
     await _repos.settingsRepository.saveReports(reports);
-    toast = 'Comment reported.';
     notifyListeners();
   }
 
@@ -1431,15 +1676,9 @@ class AppController extends ChangeNotifier {
     );
     battleVotes = [...battleVotes, vote];
     await _repos.battleVoteRepository.saveVotes(battleVotes);
-    final xpAmount = await _grantXp(XpReason.battleVoted);
-    final coinAmount = await _grantCoins(XpReason.battleVoted);
-    final challengeResult = await _checkDailyChallenges();
-    toast = _composeRewardToast(
-      message: 'Vote recorded!',
-      xp: xpAmount + challengeResult.xp,
-      coins: coinAmount + challengeResult.coins,
-      challengeTitles: challengeResult.titles,
-    );
+    await _grantXp(XpReason.battleVoted);
+    await _grantCoins(XpReason.battleVoted);
+    await _checkDailyChallenges();
     notifyListeners();
     await _checkAchievements();
   }
@@ -1460,15 +1699,9 @@ class AppController extends ChangeNotifier {
     choiceVotes = [...choiceVotes, vote];
     await _repos.choiceRepository.saveVote(vote);
     todaysChoiceTally = await _repos.choiceRepository.loadTally(question.id);
-    final xpAmount = await _grantXp(XpReason.choiceMade);
-    final coinAmount = await _grantCoins(XpReason.choiceMade);
-    final challengeResult = await _checkDailyChallenges();
-    toast = _composeRewardToast(
-      message: 'Choice recorded!',
-      xp: xpAmount + challengeResult.xp,
-      coins: coinAmount + challengeResult.coins,
-      challengeTitles: challengeResult.titles,
-    );
+    await _grantXp(XpReason.choiceMade);
+    await _grantCoins(XpReason.choiceMade);
+    await _checkDailyChallenges();
     notifyListeners();
     await _checkAchievements();
   }
@@ -1590,12 +1823,5 @@ class AppController extends ChangeNotifier {
     if (currentProfile?.id == profileId) {
       currentProfile = profiles.firstWhere((profile) => profile.id == profileId);
     }
-  }
-
-  String _ratingToast(int given, double average) {
-    if (average == 0) return 'You gave $given/5. First rating logged.';
-    final diff = given - average;
-    if (diff >= 0) return 'You rated them higher than average.';
-    return 'You rated them lower than average.';
   }
 }

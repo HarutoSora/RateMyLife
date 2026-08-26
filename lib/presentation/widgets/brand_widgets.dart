@@ -149,15 +149,20 @@ class GradientButton extends StatelessWidget {
 class NeonIconBadge extends StatelessWidget {
   const NeonIconBadge({
     super.key,
-    required this.icon,
+    this.icon,
+    this.emoji,
     required this.accent,
     this.size = 56,
     this.circular = false,
     this.badgeCount,
     this.dim = false,
-  });
+  }) : assert(icon != null || emoji != null, 'NeonIconBadge needs either icon or emoji');
 
-  final IconData icon;
+  final IconData? icon;
+
+  /// Overrides [icon] with a literal glyph (e.g. a radiation symbol) —
+  /// for a mark Material Icons simply doesn't have.
+  final String? emoji;
   final Color accent;
   final double size;
   final bool circular;
@@ -199,17 +204,19 @@ class NeonIconBadge extends StatelessWidget {
               ],
       ),
       alignment: Alignment.center,
-      child: Icon(
-        icon,
-        size: size * 0.5,
-        color: glyphColor,
-        shadows: dim
-            ? null
-            : [
-                Shadow(color: accent.withValues(alpha: 0.85), blurRadius: size * 0.22),
-                Shadow(color: Colors.white.withValues(alpha: 0.4), blurRadius: size * 0.06),
-              ],
-      ),
+      child: emoji != null
+          ? Text(emoji!, style: TextStyle(fontSize: size * 0.5))
+          : Icon(
+              icon,
+              size: size * 0.5,
+              color: glyphColor,
+              shadows: dim
+                  ? null
+                  : [
+                      Shadow(color: accent.withValues(alpha: 0.85), blurRadius: size * 0.22),
+                      Shadow(color: Colors.white.withValues(alpha: 0.4), blurRadius: size * 0.06),
+                    ],
+            ),
     );
     if (badgeCount == null || badgeCount! <= 0) return chip;
     return Stack(
@@ -409,11 +416,16 @@ class LevelProgressCard extends StatelessWidget {
           const SizedBox(height: 12),
           ClipRRect(
             borderRadius: BorderRadius.circular(8),
-            child: LinearProgressIndicator(
-              value: levelInfo.progress,
-              minHeight: 10,
-              backgroundColor: Colors.black.withValues(alpha: 0.25),
-              valueColor: const AlwaysStoppedAnimation(AppColors.gold),
+            child: TweenAnimationBuilder<double>(
+              tween: Tween(begin: 0, end: levelInfo.progress),
+              duration: const Duration(milliseconds: 800),
+              curve: Curves.easeOutCubic,
+              builder: (context, value, _) => LinearProgressIndicator(
+                value: value,
+                minHeight: 10,
+                backgroundColor: Colors.black.withValues(alpha: 0.25),
+                valueColor: const AlwaysStoppedAnimation(AppColors.gold),
+              ),
             ),
           ),
           const SizedBox(height: 8),

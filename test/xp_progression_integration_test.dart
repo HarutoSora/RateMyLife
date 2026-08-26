@@ -1,13 +1,17 @@
 import 'dart:async';
-import 'dart:typed_data';
 
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:rate_my_life/core/purchases/purchase_config.dart';
 import 'package:rate_my_life/data/models/models.dart';
 import 'package:rate_my_life/data/repositories/repositories.dart';
 import 'package:rate_my_life/domain/services/choice_service.dart';
+import 'package:rate_my_life/domain/services/nuke_service.dart';
 import 'package:rate_my_life/domain/services/progression_service.dart';
 import 'package:rate_my_life/domain/services/reward_service.dart';
 import 'package:rate_my_life/presentation/state/app_state.dart';
@@ -139,6 +143,32 @@ class _FakePhotoVoteRepository implements PhotoVoteRepository {
   Future<void> saveVotes(List<PhotoVote> votes) async => stored = votes;
 }
 
+class _FakeNukeRepository implements NukeRepository {
+  List<NukeEvent> stored = [];
+
+  @override
+  Future<List<NukeEvent>> loadSentHistory() async => stored;
+
+  @override
+  Future<NukeEvent> attack({
+    required String attackerId,
+    required UserProfile target,
+    required String attribute,
+  }) async {
+    final event = NukeEvent(
+      id: 'nuke_${stored.length}',
+      attackerId: attackerId,
+      targetId: target.id,
+      targetName: target.displayName,
+      attribute: attribute,
+      damage: -5,
+      createdAt: DateTime.now(),
+    );
+    stored = [...stored, event];
+    return event;
+  }
+}
+
 class _FakeNotificationRepository implements NotificationRepository {
   bool permissionGranted = true;
   bool scheduled = false;
@@ -159,6 +189,93 @@ class _FakeNotificationRepository implements NotificationRepository {
     scheduled = false;
     cancelCalls++;
   }
+
+  @override
+  Future<void> showNotification({required String title, required String body, String? payload}) async {
+    shownNotifications.add((title: title, body: body, payload: payload));
+  }
+
+  final shownNotifications = <({String title, String body, String? payload})>[];
+
+  final _tapController = StreamController<String>.broadcast();
+  void tapNotification(String payload) => _tapController.add(payload);
+
+  @override
+  Stream<String> get notificationTaps => _tapController.stream;
+}
+
+class _FakePushNotificationRepository implements PushNotificationRepository {
+  int registerCalls = 0;
+  int unregisterCalls = 0;
+  final _controller = StreamController<RemoteMessage>.broadcast();
+  final _openedController = StreamController<RemoteMessage>.broadcast();
+  RemoteMessage? initialMessage;
+
+  void push(RemoteMessage message) => _controller.add(message);
+  void openFromBackground(RemoteMessage message) => _openedController.add(message);
+
+  @override
+  Future<void> registerDevice() async => registerCalls++;
+
+  @override
+  Future<void> unregisterDevice() async => unregisterCalls++;
+
+  @override
+  Stream<RemoteMessage> get foregroundMessages => _controller.stream;
+
+  @override
+  Stream<RemoteMessage> get openedMessages => _openedController.stream;
+
+  @override
+  Future<RemoteMessage?> getInitialMessage() async => initialMessage;
+}
+
+class _FakeAdRepository implements AdRepository {
+  int showCalls = 0;
+  int interstitialCalls = 0;
+
+  /// Whether the next `showRewardedAd` call simulates the user watching
+  /// to completion (`onReward` fires) or the ad failing/being closed
+  /// early (`onReward` never fires) — mirrors the two real outcomes.
+  bool rewardOnShow = true;
+
+  @override
+  Future<void> showRewardedAd({required VoidCallback onReward}) async {
+    showCalls++;
+    if (rewardOnShow) onReward();
+  }
+
+  @override
+  Future<void> showInterstitialAd() async {
+    interstitialCalls++;
+  }
+}
+
+class _FakePurchaseRepository implements PurchaseRepository {
+  bool available = false;
+  List<ProductDetails> products = [];
+  final List<ProductDetails> bought = [];
+  final _controller = StreamController<List<PurchaseDetails>>.broadcast();
+
+  @override
+  Future<bool> isAvailable() async => available;
+
+  @override
+  Future<List<ProductDetails>> queryProducts(Set<String> productIds) async =>
+      products.where((p) => productIds.contains(p.id)).toList();
+
+  @override
+  Future<void> buyConsumable(ProductDetails product) async {
+    bought.add(product);
+  }
+
+  @override
+  Stream<List<PurchaseDetails>> get purchaseUpdates => _controller.stream;
+
+  void push(List<PurchaseDetails> purchases) => _controller.add(purchases);
+
+  @override
+  Future<void> completePurchase(PurchaseDetails purchase) async {}
 }
 
 class _FakeCommentRepository implements CommentRepository {
@@ -449,12 +566,18 @@ void main() {
   late _FakePhotoRepository photoRepository;
   late _FakePhotoVoteRepository photoVoteRepository;
   late _FakeNotificationRepository notificationRepository;
+  late _FakePushNotificationRepository pushNotificationRepository;
   late _FakeMessageRepository messageRepository;
   late _FakeCallRepository callRepository;
   late _FakeAppOpenRepository appOpenRepository;
+  late _FakeAdRepository adRepository;
+  late _FakePurchaseRepository purchaseRepository;
+  late _FakeRatingRepository ratingRepository;
+  late _FakeNukeRepository nukeRepository;
 
-  Future<void> setUpController({List<UserProfile> mockProfiles = const []}) async {
+  Future<void> setUpController({List<UserProfile> mockProfiles = const [], RemoteMessage? initialPushMessage}) async {
     profileRepository = _FakeProfileRepository()..mockProfiles = mockProfiles;
+    ratingRepository = _FakeRatingRepository();
     progressionRepository = _FakeProgressionRepository();
     appOpenRepository = _FakeAppOpenRepository();
     achievementRepository = _FakeAchievementRepository();
@@ -469,13 +592,21 @@ void main() {
     photoRepository = _FakePhotoRepository();
     photoVoteRepository = _FakePhotoVoteRepository();
     notificationRepository = _FakeNotificationRepository();
+    pushNotificationRepository = _FakePushNotificationRepository()..initialMessage = initialPushMessage;
     messageRepository = _FakeMessageRepository();
     callRepository = _FakeCallRepository();
+    adRepository = _FakeAdRepository();
+    nukeRepository = _FakeNukeRepository();
+    purchaseRepository = _FakePurchaseRepository();
     final repos = RepositoryBundle(
       profileRepository: profileRepository,
-      ratingRepository: _FakeRatingRepository(),
+      ratingRepository: ratingRepository,
       photoVoteRepository: photoVoteRepository,
+      nukeRepository: nukeRepository,
       notificationRepository: notificationRepository,
+      pushNotificationRepository: pushNotificationRepository,
+      adRepository: adRepository,
+      purchaseRepository: purchaseRepository,
       messageRepository: messageRepository,
       callRepository: callRepository,
       settingsRepository: _FakeSettingsRepository(),
@@ -698,6 +829,326 @@ void main() {
     });
   });
 
+  group('Ratings via AppController', () {
+    // A double-tap on Discover's "love" button (or any other double-call)
+    // used to fire two overlapping submitRating calls for the same
+    // profile before the first one's local `ratings` update landed,
+    // racing two writes against the same Firestore rating document.
+    test('a double-tap only submits one rating for the same profile', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      final target = _profile().copyWith(id: 'other');
+
+      final first = controller.submitRating(target, 5, 5);
+      final second = controller.submitRating(target, 5, 5);
+      await Future.wait([first, second]);
+
+      expect(ratingRepository.stored, hasLength(1));
+      expect(controller.wallet.balance, RewardService.coinRewards[XpReason.profileCompleted]! + RewardService.coinRewards[XpReason.ratingGiven]!);
+    });
+  });
+
+  group('Nuke via AppController', () {
+    test('nuking a profile spends attackCost coins, damages a random attribute, and logs sent history', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      await controller.updateProfile(controller.currentProfile!.copyWith(coins: 6000));
+      final target = _profile().copyWith(id: 'other', displayName: 'Rival');
+
+      await controller.nukeProfile(target);
+
+      expect(controller.wallet.balance, 6000 - NukeService.attackCost);
+      expect(controller.nukeHistory, hasLength(1));
+      final event = controller.nukeHistory.single;
+      expect(event.targetId, 'other');
+      expect(event.damage, -NukeService.damagePerNuke);
+      expect(NukeService.attributes, contains(event.attribute));
+      expect(nukeRepository.stored, hasLength(1));
+    });
+
+    test('refuses to nuke your own profile', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      await controller.updateProfile(controller.currentProfile!.copyWith(coins: 6000));
+
+      await controller.nukeProfile(controller.currentProfile!);
+
+      expect(controller.wallet.balance, 6000);
+      expect(controller.nukeHistory, isEmpty);
+      expect(controller.toast, isNotNull);
+    });
+
+    test('refuses to nuke a blocked profile', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      await controller.updateProfile(controller.currentProfile!.copyWith(coins: 6000));
+      final target = _profile().copyWith(id: 'blocked_user');
+      await controller.blockUserId(target.id);
+
+      await controller.nukeProfile(target);
+
+      expect(controller.wallet.balance, 6000);
+      expect(controller.nukeHistory, isEmpty);
+    });
+
+    test('refuses to nuke without enough coins', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      // createProfile only grants the small profileCompleted coin reward — nowhere near attackCost.
+      final target = _profile().copyWith(id: 'other');
+
+      await controller.nukeProfile(target);
+
+      expect(controller.nukeHistory, isEmpty);
+      expect(controller.toast, isNotNull);
+    });
+
+    // A double-tap (or any other double-call) used to let two overlapping
+    // nukeProfile calls both pass the synchronous balance check against
+    // the same stale balance before either one's coin deduction landed —
+    // spending more coins than the wallet actually had.
+    test('a double-tap only spends attackCost once, even with balance for two', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      await controller.updateProfile(
+          controller.currentProfile!.copyWith(coins: NukeService.attackCost * 2));
+      final target = _profile().copyWith(id: 'other');
+
+      final first = controller.nukeProfile(target);
+      final second = controller.nukeProfile(target);
+      await Future.wait([first, second]);
+
+      expect(controller.nukeHistory, hasLength(1));
+      expect(controller.wallet.balance, NukeService.attackCost * 2 - NukeService.attackCost);
+    });
+  });
+
+  group('Cure via AppController', () {
+    test('curing a damaged attribute spends curePotionCost coins and heals healPerPotion points', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      await controller.updateProfile(controller.currentProfile!.copyWith(
+        coins: 6000,
+        nukeDamage: const {'career': -5},
+      ));
+
+      await controller.cureDamage('career');
+
+      expect(controller.wallet.balance, 6000 - NukeService.curePotionCost);
+      expect(controller.currentProfile!.nukeDamage['career'], -5 + NukeService.healPerPotion);
+    });
+
+    test('a cure never heals an attribute above 0 damage', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      await controller.updateProfile(controller.currentProfile!.copyWith(
+        coins: 6000,
+        nukeDamage: const {'career': -2},
+      ));
+
+      await controller.cureDamage('career');
+
+      expect(controller.currentProfile!.nukeDamage['career'], 0);
+    });
+
+    test('refuses to cure without enough coins', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      await controller.updateProfile(controller.currentProfile!.copyWith(nukeDamage: const {'career': -5}));
+
+      await controller.cureDamage('career');
+
+      expect(controller.currentProfile!.nukeDamage['career'], -5);
+      expect(controller.toast, isNotNull);
+    });
+
+    // Same double-tap race class as nukeProfile above — both spend from
+    // the same shared coin balance, so the guard is shared between them.
+    test('a double-tap only spends curePotionCost once, even with balance for two', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      await controller.updateProfile(controller.currentProfile!.copyWith(
+        coins: NukeService.curePotionCost * 2,
+        nukeDamage: const {'career': -5},
+      ));
+
+      final first = controller.cureDamage('career');
+      final second = controller.cureDamage('career');
+      await Future.wait([first, second]);
+
+      expect(controller.wallet.balance, NukeService.curePotionCost * 2 - NukeService.curePotionCost);
+      expect(controller.currentProfile!.nukeDamage['career'], -5 + NukeService.healPerPotion);
+    });
+  });
+
+  group('Rewarded ads via AppController', () {
+    test('watching a rewarded ad to completion grants coins and reports success', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      final before = controller.wallet.balance;
+
+      final earned = await controller.watchRewardedAd();
+
+      expect(earned, isTrue);
+      expect(adRepository.showCalls, 1);
+      expect(controller.wallet.balance, before + RewardService.coinRewards[XpReason.adWatched]!);
+      expect(controller.wallet.transactions.last.reason, XpReason.adWatched);
+    });
+
+    test('an ad that fails to load or is closed early grants no coins and reports failure', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      adRepository.rewardOnShow = false;
+      final before = controller.wallet.balance;
+
+      final earned = await controller.watchRewardedAd();
+
+      expect(earned, isFalse);
+      expect(adRepository.showCalls, 1);
+      expect(controller.wallet.balance, before);
+    });
+
+    // A double-tap (or any other double-call) on "Watch Ad" used to be
+    // able to fire two overlapping ad shows, each independently granting
+    // coins for what was really only one ad watch.
+    test('a double-tap only shows and rewards the ad once', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      final before = controller.wallet.balance;
+
+      final first = controller.watchRewardedAd();
+      final second = controller.watchRewardedAd();
+      final results = await Future.wait([first, second]);
+
+      expect(adRepository.showCalls, 1);
+      expect(results, containsAll([true, false]));
+      expect(controller.wallet.balance, before + RewardService.coinRewards[XpReason.adWatched]!);
+    });
+  });
+
+  group('Coin purchases via AppController', () {
+    ProductDetails product(String id) => ProductDetails(
+          id: id,
+          title: 'Coins',
+          description: 'Coins',
+          price: r'$0.99',
+          rawPrice: 0.99,
+          currencyCode: 'USD',
+        );
+
+    PurchaseDetails purchase(String id, PurchaseStatus status) {
+      final details = PurchaseDetails(
+        productID: id,
+        verificationData: PurchaseVerificationData(
+          localVerificationData: 'local',
+          serverVerificationData: 'server',
+          source: 'test',
+        ),
+        transactionDate: null,
+        status: status,
+      );
+      details.pendingCompletePurchase = true;
+      if (status == PurchaseStatus.error) {
+        details.error = IAPError(source: 'test', code: 'boom', message: 'Something went wrong.');
+      }
+      return details;
+    }
+
+    test('a purchased product grants the mapped coin amount and completes the purchase', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      purchaseRepository.available = true;
+      purchaseRepository.products = [product(PurchaseConfig.coins500)];
+      // Re-run the product query the way _load() would on a fresh launch.
+      controller.purchaseProducts = await purchaseRepository.queryProducts(PurchaseConfig.allProductIds.toSet());
+      final before = controller.wallet.balance;
+
+      purchaseRepository.push([purchase(PurchaseConfig.coins500, PurchaseStatus.purchased)]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.wallet.balance, before + PurchaseConfig.coinsForProduct[PurchaseConfig.coins500]!);
+      expect(controller.wallet.transactions.last.reason, XpReason.coinsPurchased);
+    });
+
+    test('a restored purchase also grants coins', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      final before = controller.wallet.balance;
+
+      purchaseRepository.push([purchase(PurchaseConfig.coins1200, PurchaseStatus.restored)]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.wallet.balance, before + PurchaseConfig.coinsForProduct[PurchaseConfig.coins1200]!);
+    });
+
+    test('a canceled purchase grants nothing and shows no error', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      final before = controller.wallet.balance;
+
+      purchaseRepository.push([purchase(PurchaseConfig.coins500, PurchaseStatus.canceled)]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.wallet.balance, before);
+    });
+
+    test('an errored purchase grants nothing and surfaces the error', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      final before = controller.wallet.balance;
+
+      purchaseRepository.push([purchase(PurchaseConfig.coins500, PurchaseStatus.error)]);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.wallet.balance, before);
+      expect(controller.toast, isNotNull);
+    });
+
+    test('purchaseCoins on a product not yet available shows an explanatory toast', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      final before = controller.wallet.balance;
+
+      await controller.purchaseCoins(PurchaseConfig.coins500);
+
+      expect(purchaseRepository.bought, isEmpty);
+      expect(controller.wallet.balance, before);
+      expect(controller.toast, isNotNull);
+    });
+
+    test('purchaseCoins on an available product starts the real purchase flow', () async {
+      await setUpController();
+      await controller.createProfile(_profile());
+      purchaseRepository.available = true;
+      purchaseRepository.products = [product(PurchaseConfig.coins2500)];
+      controller.purchaseProducts = await purchaseRepository.queryProducts(PurchaseConfig.allProductIds.toSet());
+
+      await controller.purchaseCoins(PurchaseConfig.coins2500);
+
+      expect(purchaseRepository.bought.single.id, PurchaseConfig.coins2500);
+    });
+  });
+
+  group('Interstitial ads via AppController', () {
+    test('the 30th action shows an interstitial, not before or after', () async {
+      await setUpController();
+      // Profile creation itself is action #1 (it goes through the same
+      // _checkAchievements() checkpoint as everything else below).
+      await controller.createProfile(_profile());
+
+      for (var i = 0; i < 28; i++) {
+        await controller.submitRating(_profile().copyWith(id: 'other$i'), 4, 4);
+      }
+      expect(adRepository.interstitialCalls, 0);
+
+      await controller.submitRating(_profile().copyWith(id: 'other28'), 4, 4);
+      expect(adRepository.interstitialCalls, 1);
+
+      await controller.submitRating(_profile().copyWith(id: 'other29'), 4, 4);
+      expect(adRepository.interstitialCalls, 1);
+    });
+  });
+
   group('Daily challenges via AppController', () {
     // Today's 3-challenge rotation is date-based (see DailyChallengeService),
     // so a hardcoded reason (e.g. always "rate a profile") would be flaky
@@ -813,6 +1264,8 @@ void main() {
         challengeRepository: challengeRepository,
         cosmeticRepository: _FakeCosmeticRepository(),
         photoVoteRepository: _FakePhotoVoteRepository(),
+        nukeRepository: _FakeNukeRepository(),
+        purchaseRepository: _FakePurchaseRepository(),
         notificationRepository: _FakeNotificationRepository(),
         messageRepository: _FakeMessageRepository(),
         callRepository: _FakeCallRepository(),
@@ -1242,6 +1695,115 @@ void main() {
 
       expect(notificationRepository.scheduleCalls, callsBefore);
       expect(notificationRepository.cancelCalls, 0);
+    });
+
+    test('_load also registers this device for push notifications when notifications start enabled', () async {
+      await setUpController();
+
+      expect(pushNotificationRepository.registerCalls, 1);
+    });
+
+    test('turning notifications off unregisters this device from push, not just the local reminder', () async {
+      await setUpController();
+
+      await controller.updateSettings(controller.settings.copyWith(notifications: false));
+
+      expect(pushNotificationRepository.unregisterCalls, 1);
+    });
+
+    test('turning notifications back on re-registers this device for push', () async {
+      await setUpController();
+      await controller.updateSettings(controller.settings.copyWith(notifications: false));
+
+      await controller.updateSettings(controller.settings.copyWith(notifications: true));
+
+      // Once from _load(), once from re-enabling.
+      expect(pushNotificationRepository.registerCalls, 2);
+    });
+
+    test('a message arriving in the foreground shows a local notification with its title/body', () async {
+      await setUpController();
+
+      pushNotificationRepository.push(const RemoteMessage(notification: RemoteNotification(title: 'Nova', body: 'Sent you a message')));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(notificationRepository.shownNotifications, [(title: 'Nova', body: 'Sent you a message', payload: null)]);
+    });
+
+    test('a foreground message with no notification payload is ignored, not shown blank', () async {
+      await setUpController();
+
+      pushNotificationRepository.push(const RemoteMessage(data: {'type': 'silent'}));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(notificationRepository.shownNotifications, isEmpty);
+    });
+
+    test('a foreground message payload encodes the sender for tap-to-navigate', () async {
+      await setUpController();
+
+      pushNotificationRepository.push(const RemoteMessage(
+        notification: RemoteNotification(title: 'Nova', body: 'Sent you a message'),
+        data: {'type': 'message', 'otherUserId': 'nova_uid'},
+      ));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(notificationRepository.shownNotifications.single.payload, 'message:nova_uid');
+    });
+
+    test('tapping a foreground notification sets pendingConversationOpen', () async {
+      await setUpController();
+
+      notificationRepository.tapNotification('message:nova_uid');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.pendingConversationOpen, 'nova_uid');
+    });
+
+    test('tapping a daily-reminder notification (no message: prefix) does not navigate', () async {
+      await setUpController();
+
+      notificationRepository.tapNotification('some_other_payload');
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.pendingConversationOpen, isNull);
+    });
+
+    test('tapping a background-delivered message notification sets pendingConversationOpen', () async {
+      await setUpController();
+
+      pushNotificationRepository.openFromBackground(const RemoteMessage(data: {'type': 'message', 'otherUserId': 'nova_uid'}));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.pendingConversationOpen, 'nova_uid');
+    });
+
+    test('a call notification tap never sets pendingConversationOpen', () async {
+      await setUpController();
+
+      pushNotificationRepository.openFromBackground(const RemoteMessage(data: {'type': 'call', 'callId': 'call1'}));
+      await Future<void>.delayed(Duration.zero);
+
+      expect(controller.pendingConversationOpen, isNull);
+    });
+
+    test('clearPendingConversationOpen resets it back to null', () async {
+      await setUpController();
+      notificationRepository.tapNotification('message:nova_uid');
+      await Future<void>.delayed(Duration.zero);
+      expect(controller.pendingConversationOpen, 'nova_uid');
+
+      controller.clearPendingConversationOpen();
+
+      expect(controller.pendingConversationOpen, isNull);
+    });
+
+    test('a notification that cold-started the app opens the right conversation', () async {
+      await setUpController(
+        initialPushMessage: const RemoteMessage(data: {'type': 'message', 'otherUserId': 'nova_uid'}),
+      );
+
+      expect(controller.pendingConversationOpen, 'nova_uid');
     });
   });
 

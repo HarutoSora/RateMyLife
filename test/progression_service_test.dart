@@ -8,12 +8,17 @@ void main() {
 
     // These are variable, per-event bonuses granted directly by
     // AppController (via _grantCustomXp), not looked up from this fixed
-    // table.
+    // table — plus `adWatched`, which is coins-only by design (see
+    // RewardService) and deliberately absent from this table entirely.
     const variableReasons = {
       XpReason.achievementUnlocked,
       XpReason.dailyChallengeCompleted,
       XpReason.cosmeticPurchased,
       XpReason.boostPurchased,
+      XpReason.adWatched,
+      XpReason.nukeUsed,
+      XpReason.curePotionUsed,
+      XpReason.coinsPurchased,
     };
 
     test('awards the configured XP amount for each fixed-reward reason', () {

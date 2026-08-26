@@ -221,6 +221,60 @@ class LifeScoreService {
     return happiness + stress;
   }
 
+  /// Applies every entry in [damageByAttribute] (see `NukeService`) to
+  /// [score] one at a time via `applyDelta` — used by
+  /// `ProfileService.recalculate` to reapply a profile's full,
+  /// persisted nuke damage on top of a freshly calculated score, since
+  /// `calculate` itself only ever sees the raw profile fields.
+  LifeScore applyDamage(LifeScore score, Map<String, int> damageByAttribute) {
+    var result = score;
+    for (final entry in damageByAttribute.entries) {
+      result = applyDelta(result, entry.key, entry.value);
+    }
+    return result;
+  }
+
+  /// Adjusts a single `LifeScore.breakdown` category (keyed the same as
+  /// `LifeScore.toJson`: `career`/`financial`/`education`/
+  /// `independence`/`social`/`lifestyle`/`wellbeing`) by [delta] —
+  /// negative for nuke damage, positive for a cure potion — reclamps it
+  /// to 0-100, and recomputes `overall` from the same weights
+  /// `calculate` uses. An unrecognized [attribute] is a no-op. Public
+  /// (not just used via `applyDamage`) because a remote nuke/cure only
+  /// ever needs to adjust the one already-stored `score` it can see by
+  /// this single increment — it has no access to the target's raw,
+  /// owner-private profile fields to recompute from scratch.
+  LifeScore applyDelta(LifeScore score, String attribute, int delta) {
+    int adjust(String key, int current) =>
+        key == attribute ? _clamp(current + delta) : current;
+    final career = adjust('career', score.career);
+    final financial = adjust('financial', score.financial);
+    final education = adjust('education', score.education);
+    final independence = adjust('independence', score.independence);
+    final social = adjust('social', score.social);
+    final lifestyle = adjust('lifestyle', score.lifestyle);
+    final wellbeing = adjust('wellbeing', score.wellbeing);
+    final weighted = financial * 0.25 +
+        career * 0.20 +
+        education * 0.10 +
+        independence * 0.15 +
+        social * 0.10 +
+        lifestyle * 0.10 +
+        wellbeing * 0.10;
+    return LifeScore(
+      overall: _clamp(weighted),
+      career: career,
+      financial: financial,
+      education: education,
+      independence: independence,
+      social: social,
+      lifestyle: lifestyle,
+      wellbeing: wellbeing,
+      explanations: score.explanations,
+      calculatedAt: DateTime.now(),
+    );
+  }
+
   double _ratioScore(double ratio, {required double midpoint}) {
     final adjusted = ratio / midpoint.clamp(0.4, 2.5).toDouble();
     return (adjusted / (adjusted + 0.75)) * 100;

@@ -12,6 +12,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/theme/app_typography.dart';
 import '../../data/models/models.dart';
 import 'brand_widgets.dart';
+import 'fx_widgets.dart';
 
 /// Short relative timestamp ("now", "5m", "3h", "2d", or a date past a
 /// week) — shared by comments and messages rather than each keeping
@@ -1149,7 +1150,11 @@ class CoinBalancePill extends StatelessWidget {
         children: [
           const Icon(Icons.monetization_on_rounded, color: AppColors.gold, size: 18),
           const SizedBox(width: 6),
-          Text('$balance', style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.gold)),
+          AnimatedCountUp(
+            value: balance.toDouble(),
+            duration: const Duration(milliseconds: 500),
+            style: const TextStyle(fontWeight: FontWeight.w800, color: AppColors.gold),
+          ),
         ],
       ),
     );

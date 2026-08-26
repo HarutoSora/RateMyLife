@@ -17,22 +17,26 @@ const messaging = getMessaging();
 async function sendToUser(uid, notification, data) {
   const tokenDoc = await db.collection("fcmTokens").doc(uid).get();
   const token = tokenDoc.exists ? tokenDoc.data().token : null;
-  if (!token) return;
+  if (!token) {
+    logger.info(`sendToUser: no token registered for ${uid}`);
+    return;
+  }
 
   try {
-    await messaging.send({
+    const messageId = await messaging.send({
       token,
       notification,
       data,
       android: {priority: "high"},
     });
+    logger.info(`sendToUser: sent to ${uid}, messageId=${messageId}`);
   } catch (err) {
     // A dead token (app uninstalled, data cleared) fails every future
     // send the same way — delete it so this isn't retried forever.
     if (err.code === "messaging/registration-token-not-registered") {
       await tokenDoc.ref.delete();
     } else {
-      logger.error("Failed to send notification", err);
+      logger.error(`Failed to send notification to ${uid}`, err);
     }
   }
 }
